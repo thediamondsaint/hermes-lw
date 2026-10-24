@@ -47,6 +47,9 @@ ShellRoot {
   property string modelCatalogSource: ""
   property bool modelCatalogStale: false
   property double modelCatalogFetchedAt: 0
+  property bool catalogAllCollapsed: false
+  property var catalogCollapsedGroups: []
+  property var catalogExpandedGroups: []
   property var catalogPublishers: {
     var found = {}
     for (var i = 0; i < root.modelCatalog.length; ++i) found[root.modelPublisher(root.modelCatalog[i])] = true
@@ -97,6 +100,44 @@ ShellRoot {
     var rank = order.indexOf(label)
     return rank < 0 ? 1000 : rank
   }
+  function catalogGroupKey(label) { return catalogGroupBy.currentIndex + "::" + label }
+  function catalogGroupIsCollapsed(label) {
+    var key = root.catalogGroupKey(label)
+    return root.catalogAllCollapsed ? root.catalogExpandedGroups.indexOf(key) < 0 : root.catalogCollapsedGroups.indexOf(key) >= 0
+  }
+  function toggleCatalogGroup(label) {
+    var key = root.catalogGroupKey(label)
+    var list = (root.catalogAllCollapsed ? root.catalogExpandedGroups : root.catalogCollapsedGroups).slice(0)
+    var index = list.indexOf(key)
+    if (index >= 0) list.splice(index, 1)
+    else list.push(key)
+    if (root.catalogAllCollapsed) root.catalogExpandedGroups = list
+    else root.catalogCollapsedGroups = list
+  }
+  function collapseAllCatalogGroups() {
+    root.catalogAllCollapsed = true
+    root.catalogCollapsedGroups = []
+    root.catalogExpandedGroups = []
+  }
+  function expandAllCatalogGroups() {
+    root.catalogAllCollapsed = false
+    root.catalogCollapsedGroups = []
+    root.catalogExpandedGroups = []
+  }
+  property var catalogDisplayItems: {
+    var rows = [], items = root.catalogItems, index = 0
+    while (index < items.length) {
+      var section = items[index].catalog_section
+      if (root.catalogGroupIsCollapsed(section)) {
+        rows.push({is_placeholder: true, catalog_section: section, name: "", id: "", category: "", inputs: [], outputs: [], supported_parameters: []})
+        while (index < items.length && items[index].catalog_section === section) ++index
+      } else {
+        rows.push(items[index])
+        ++index
+      }
+    }
+    return rows
+  }
   function resetCatalogFilters() {
     modelSearch.text = ""
     catalogPublisherFilter.currentIndex = 0
@@ -107,6 +148,7 @@ ShellRoot {
     catalogCapabilityFilter.currentIndex = 0
     catalogGroupBy.currentIndex = 0
     catalogSort.currentIndex = 0
+    root.expandAllCatalogGroups()
   }
   property var catalogItems: {
     var items = root.modelCatalog.map(function(model, index) {
@@ -567,6 +609,7 @@ ShellRoot {
   Shortcut { sequence: "Ctrl+3"; onActivated: root.page = "Profiles" }
   Shortcut { sequence: "Ctrl+4"; onActivated: root.page = "Kanban" }
   Shortcut { sequence: "Ctrl+5"; onActivated: root.page = "Prompts" }
+  Shortcut { sequence: "Ctrl+6"; onActivated: root.page = "Models & Providers" }
   Shortcut { sequence: "Escape"; enabled: root.showModels || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor; onActivated: root.closeTopDialog() }
   Timer { interval: 10000; running: root.pendingRequests === 0; repeat: true; onTriggered: root.refresh() }
   Component.onCompleted: { root.refresh(); root.loadModelProviders() }
@@ -654,10 +697,10 @@ ShellRoot {
                 }
               }
               Rectangle { width: parent.width; height: 1; color: root.border }
-              Repeater { model: ["Overview", "Projects", "Profiles", "Kanban", "Prompts"]
+              Repeater { model: ["Overview", "Projects", "Models & Providers", "Profiles", "Kanban", "Prompts"]
                 delegate: Rectangle { required property string modelData; width: parent.width; height: 25; color: root.page === modelData ? root.selectedFill : "transparent"; border.color: root.page === modelData ? root.blue : "transparent"
                   Row { anchors.fill: parent; anchors.leftMargin: 8; spacing: 8
-                    Text { text: modelData === "Overview" ? "⌂" : modelData === "Projects" ? "▣" : modelData === "Profiles" ? "◉" : modelData === "Kanban" ? "▦" : "✦"; color: root.page === modelData ? "#ffffff" : root.accent; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: modelData === "Overview" ? "⌂" : modelData === "Projects" ? "▣" : modelData === "Models & Providers" ? "⚙" : modelData === "Profiles" ? "◉" : modelData === "Kanban" ? "▦" : "✦"; color: root.page === modelData ? "#ffffff" : root.accent; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
                     Text { text: modelData; color: root.page === modelData ? "#ffffff" : root.text; font.pixelSize: 10; anchors.verticalCenter: parent.verticalCenter }
                   }
                   MouseArea { anchors.fill: parent; onClicked: root.page = modelData }
@@ -672,14 +715,14 @@ ShellRoot {
                 }
               }
               Rectangle { width: parent.width; height: 1; color: root.border }
-              Text { text: "PROFILES  ·  " + root.profiles.length + "  ›"; color: root.accent; font.pixelSize: 8; font.bold: true; height: 17; MouseArea { anchors.fill: parent; onClicked: root.page = "Profiles" } }
+              Text { text: (root.page === "Models & Providers" ? "BACKEND PROFILES" : "PROFILES") + "  ·  " + root.profiles.length + "  ›"; color: root.accent; font.pixelSize: 8; font.bold: true; height: 17; MouseArea { anchors.fill: parent; onClicked: root.page = "Profiles" } }
               Repeater { model: root.profiles.slice(0, 7)
                 delegate: Rectangle { required property var modelData; width: parent.width; height: 22; color: root.selectedProfile === modelData.slug ? root.selectedFill : "transparent"
                   Row { anchors.fill: parent; anchors.leftMargin: 3; spacing: 7
                   Rectangle { width: 6; height: 6; radius: 2; color: modelData.paused ? root.amber : modelData.active ? root.accent : root.border; anchors.verticalCenter: parent.verticalCenter }
                   Text { text: modelData.slug; color: root.selectedProfile === modelData.slug ? "#ffffff" : root.text; font.pixelSize: 9; elide: Text.ElideRight; width: parent.width - 18; anchors.verticalCenter: parent.verticalCenter }
                   }
-                  MouseArea { anchors.fill: parent; onClicked: { root.selectedProfile = modelData.slug; root.page = "Profiles" } }
+                  MouseArea { anchors.fill: parent; onClicked: { root.selectedProfile = modelData.slug; if (root.page !== "Models & Providers") root.page = "Profiles" } }
                 }
               }
               Item { width: 1; height: 1; Layout.fillHeight: true }
@@ -701,8 +744,8 @@ ShellRoot {
               Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#0a3683" }
               Row { anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 12; spacing: 8
                 Column { anchors.verticalCenter: parent.verticalCenter; spacing: 2
-                  Text { text: root.page === "Overview" ? "Workspace" : root.page === "Projects" ? "Projects" : root.page === "Profiles" ? "Agent profiles" : root.page === "Kanban" ? "Task board" : "Prompt library"; color: "#ffffff"; font.pixelSize: 14; font.bold: true }
-                  Text { text: root.page === "Kanban" ? (root.projectInfo.name || "Default") + "  ·  " + root.tasks.length + " tasks" : "Hermes LW"; color: "#e5efff"; font.pixelSize: 8 }
+                  Text { text: root.page === "Overview" ? "Workspace" : root.page === "Projects" ? "Projects" : root.page === "Profiles" ? "Agent profiles" : root.page === "Models & Providers" ? "Models & Providers" : root.page === "Kanban" ? "Task board" : "Prompt library"; color: "#ffffff"; font.pixelSize: 14; font.bold: true }
+                  Text { text: root.page === "Kanban" ? (root.projectInfo.name || "Default") + "  ·  " + root.tasks.length + " tasks" : root.page === "Models & Providers" ? "Choose a backend, model, and profile credentials" : "Hermes LW"; color: "#e5efff"; font.pixelSize: 8 }
                 }
                 Item { width: Math.max(1, parent.width - 330); height: 1 }
                 Text { text: root.managerProfile ? "Manager: " + root.managerProfile : "No manager selected"; color: "#ffffff"; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter; MouseArea { anchors.fill: parent; onClicked: root.page = "Profiles" } }
@@ -824,7 +867,7 @@ ShellRoot {
 
             // PROFILES
             Row {
-              anchors.fill: parent; anchors.margins: 24; spacing: 16; visible: root.page === "Profiles"
+              anchors.fill: parent; anchors.margins: 24; spacing: 16; visible: root.page === "Profiles" || root.page === "Models & Providers"
               Rectangle { width: 260; height: parent.height; radius: 2; color: root.surface; border.color: root.border
                 Column { anchors.fill: parent; anchors.margins: 14; spacing: 10
                   Row { width: parent.width; spacing: 8
@@ -858,7 +901,7 @@ ShellRoot {
                   Row { width: parent.width; spacing: 8
                     Column { id: profileTitleColumn; spacing: 5
                       Text { text: parent.parent.parent.current.slug || "Choose a profile"; color: root.text; font.pixelSize: 17; font.bold: true }
-                      Text { text: "PROFILE SETTINGS"; color: root.muted; font.pixelSize: 9; font.letterSpacing: 1.3 }
+                  Text { text: root.page === "Models & Providers" ? "BACKEND, MODEL & CREDENTIALS" : "PROFILE SETTINGS"; color: root.muted; font.pixelSize: 9; font.letterSpacing: 1.3 }
                     }
                     Item { width: Math.max(0, parent.width - profileTitleColumn.implicitWidth - 297 - 16); height: 1 }
                     Row { spacing: 7
@@ -1388,7 +1431,15 @@ ShellRoot {
               TextField { leftPadding: 10; rightPadding: 10; id: modelSearch; width: 410; height: 36; color: root.text; font.pixelSize: 10; placeholderText: "Search name, creator, use, modality, capability…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               ComboBox { id: catalogPublisherFilter; width: 190; height: 36; model: root.catalogPublishers; contentItem: Text { text: catalogPublisherFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               ComboBox { id: modelUseFilter; width: 155; height: 36; model: ["All uses", "Favorites", "Text & chat", "Coding", "Vision", "Image generation", "Audio", "Video", "Embeddings", "Reranking", "Decision", "Files & documents", "Other"]; contentItem: Text { text: modelUseFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              Item { width: Math.max(0, parent.width - 410 - 190 - 155 - 27 - catalogCount.implicitWidth); height: 1 }
+              Rectangle { width: 80; height: 32; radius: 2; color: root.raised; border.color: root.border; anchors.verticalCenter: parent.verticalCenter
+                Text { anchors.centerIn: parent; text: "Collapse all"; color: root.accent; font.pixelSize: 8; font.bold: true }
+                MouseArea { anchors.fill: parent; onClicked: root.collapseAllCatalogGroups() }
+              }
+              Rectangle { width: 80; height: 32; radius: 2; color: root.raised; border.color: root.border; anchors.verticalCenter: parent.verticalCenter
+                Text { anchors.centerIn: parent; text: "Expand all"; color: root.accent; font.pixelSize: 8; font.bold: true }
+                MouseArea { anchors.fill: parent; onClicked: root.expandAllCatalogGroups() }
+              }
+              Item { width: Math.max(0, parent.width - 410 - 190 - 155 - 80 - 80 - 54 - catalogCount.implicitWidth); height: 1 }
               Text { id: catalogCount; text: root.catalogItems.length + " / " + root.modelCatalog.length + " shown"; color: root.muted; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
             }
             Row { width: parent.width; height: 36; spacing: 8
@@ -1411,10 +1462,13 @@ ShellRoot {
               Item { width: 28; height: 1 }
               Item { width: 75; height: 1 }
             }
-            ListView { id: catalogList; width: parent.width; height: parent.height - 254; clip: true; spacing: 6; model: root.catalogItems; section.property: "catalog_section"; section.criteria: ViewSection.FullString
-              section.delegate: Rectangle { width: catalogList.width; height: 25; color: "transparent"; Text { anchors.left: parent.left; anchors.leftMargin: 12; anchors.verticalCenter: parent.verticalCenter; text: section; color: root.accent; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.7 } }
+            ListView { id: catalogList; width: parent.width; height: parent.height - 254; clip: true; spacing: 6; model: root.catalogDisplayItems; section.property: "catalog_section"; section.criteria: ViewSection.FullString
+              section.delegate: Rectangle { width: catalogList.width; height: 25; radius: 2; color: root.raised
+                Text { anchors.left: parent.left; anchors.leftMargin: 12; anchors.verticalCenter: parent.verticalCenter; text: (root.catalogGroupIsCollapsed(section) ? "▸  " : "▾  ") + section + "   ·   " + root.catalogItems.filter(function(item) { return item.catalog_section === section }).length; color: root.accent; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.4 }
+                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleCatalogGroup(section) }
+              }
               ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-              delegate: Rectangle { required property var modelData; width: catalogList.width; height: 74; radius: 2; color: modelHover.containsMouse ? root.hoverFill : root.surface; border.color: modelHover.containsMouse ? root.border : root.border
+              delegate: Rectangle { required property var modelData; width: catalogList.width; height: modelData.is_placeholder ? 0 : 74; visible: !modelData.is_placeholder; radius: 2; color: modelHover.containsMouse ? root.hoverFill : root.surface; border.color: root.border
                 MouseArea { id: modelHover; anchors.fill: parent; hoverEnabled: true; onClicked: { modelInput.text = modelData.id; providerInput.currentIndex = root.providerIndex("openrouter"); baseUrlInput.text = ""; root.showModels = false; root.notice = "Selected " + modelData.id + " · save profile to apply" } }
                 Row { anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 8
                   Column { width: parent.width * 0.55 - 8; anchors.verticalCenter: parent.verticalCenter; spacing: 5
