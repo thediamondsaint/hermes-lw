@@ -7,7 +7,7 @@ APP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 if command -v hyprctl >/dev/null 2>&1; then
   read -r WINDOW_W WINDOW_H < <(hyprctl monitors -j 2>/dev/null | python -c 'import json,sys; m=json.load(sys.stdin)[0]; s=float(m.get("scale",1)); w=round(m["width"]/s); h=round(m["height"]/s); print(min(1500,max(1150,w-80)),min(960,max(720,h-40)))' 2>/dev/null || true)
   if [[ "${WINDOW_W:-}" =~ ^[0-9]+$ && "${WINDOW_H:-}" =~ ^[0-9]+$ ]] && [[ "$(hyprctl status -j 2>/dev/null | python -c 'import json,sys; print(json.load(sys.stdin).get("configProvider",""))' 2>/dev/null || true)" == "lua" ]]; then
-    hyprctl eval "hl.window_rule({name='hermes-control-window',match={title='Hermes LW'},workspace='5',float=true,center=true,size={$WINDOW_W,$WINDOW_H},tag='-default-opacity',opacity='1 override 1 override'})" >/dev/null 2>&1 || true
+    hyprctl eval "hl.window_rule({name='hermes-lw-window',match={title='Hermes LW'},float=true,center=true,size={$WINDOW_W,$WINDOW_H},tag='-default-opacity',opacity='1 override 1 override'})" >/dev/null 2>&1 || true
   fi
 fi
 

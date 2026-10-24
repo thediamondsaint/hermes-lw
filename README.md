@@ -28,4 +28,16 @@ Ten workflow additions:
 
 Each task can limit work to selected profiles; the backend enforces that list for individual and bulk assignments. The board also supports scheduled work, task comments, dependency links, and per-project JSON exports while applying task lifecycle changes through Hermes' own CLI. Hermes owns the task body and comment history. The first config save makes a one-time `config.yaml.hermes-control-backup` next to the Hermes config. Pausing a profile in Hermes LW prevents new assignments from this app; already-running tasks continue. Cost estimates are stored by this app in `~/.local/share/hermes-control/estimates.json`; Hermes does not expose provider spend as Kanban task cost, so these are planning numbers rather than metered charges. The UI uses Windows XP Luna styling with a persistent dark mode.
 
-The backend binds only to `127.0.0.1:18731`. It needs Python 3 with PyYAML, Hermes Agent on `PATH`, and Quickshell. On Lua-configured Hyprland, the launcher adds a session-only window rule that opens the desk floating, centered, and sized to the current scaled monitor; it opens only on workspace 5 and does not edit Hyprland config files.
+The backend binds only to `127.0.0.1:18731` and rejects nonlocal hosts and cross-origin web requests. It needs Python 3 with PyYAML, Hermes Agent on `PATH`, and Quickshell. On Lua-configured Hyprland, the launcher applies a session-only rule to float, center, and size the desk for the current scaled monitor. It does not force a workspace or edit Hyprland config files.
+
+## Screenshots
+
+These screenshots use fictional demo profiles, prompts, and tasks.
+
+![Hermes LW overview](screenshots/overview.png)
+
+![Hermes LW Kanban board](screenshots/kanban.png)
+
+![Hermes LW profiles](screenshots/profiles.png)
+
+![Hermes LW model catalog](screenshots/model-catalog.png)

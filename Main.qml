@@ -586,7 +586,7 @@ ShellRoot {
                   }
                 }
               }
-              Row { width: parent.width; height: 22
+              Row { width: parent.width; height: 22; spacing: 8
                 Text { text: "Recent tasks"; color: root.text; font.pixelSize: 11; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
                 Item { width: 1; height: 1; Layout.fillWidth: true }
                 Text { text: "Open board →"; color: root.accent; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter; MouseArea { anchors.fill: parent; onClicked: root.page = "Kanban" } }
@@ -599,7 +599,7 @@ ShellRoot {
                   Text { width: parent.width * .19; text: "ESTIMATE"; color: root.muted; font.pixelSize: 8; font.bold: true; horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter }
                 }
               }
-              Flickable { width: parent.width; height: parent.height - 165; clip: true; contentHeight: overviewTaskRows.implicitHeight
+              Flickable { width: parent.width; height: Math.max(80, parent.height - 205); clip: true; contentHeight: overviewTaskRows.implicitHeight
                 Column { id: overviewTaskRows; width: parent.width
                   Repeater { model: root.tasks.slice(0, 30)
                     delegate: Rectangle { required property var modelData; required property int index; width: parent.width; height: 29; color: index % 2 ? root.surface : root.sidebarFill
@@ -680,7 +680,7 @@ ShellRoot {
               anchors.fill: parent; anchors.margins: 24; spacing: 16; visible: root.page === "Profiles"
               Rectangle { width: 260; height: parent.height; radius: 2; color: root.surface; border.color: root.border
                 Column { anchors.fill: parent; anchors.margins: 14; spacing: 10
-                  Row { width: parent.width
+                  Row { width: parent.width; spacing: 8
                     Text { text: "ALL PROFILES"; color: root.muted; font.pixelSize: 9; font.bold: true; font.letterSpacing: 1.1 }
                     Item { width: 1; height: 1; Layout.fillWidth: true }
                     Text { text: root.profiles.length; color: root.accent; font.pixelSize: 10 }
@@ -689,7 +689,7 @@ ShellRoot {
                       MouseArea { anchors.fill: parent; onClicked: { root.showCreateProfile = true; newProfileSlug.text = ""; newProfileRole.text = ""; generatedSoul.text = ""; newProfileKey.text = "" } }
                     }
                   }
-                  TextField { id: profileSearchInput; width: parent.width; height: 30; placeholderText: "Find a profile…"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                  TextField { leftPadding: 9; rightPadding: 9; id: profileSearchInput; width: parent.width; height: 30; placeholderText: "Find a profile…"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                   Repeater { model: root.profiles.filter(function(p) { return !profileSearchInput.text || p.slug.toLowerCase().indexOf(profileSearchInput.text.toLowerCase()) >= 0 })
                     delegate: Rectangle { required property var modelData; required property int index; width: parent.width; height: 58; radius: 2; color: root.selectedProfile === modelData.slug ? root.selectedFill : "transparent"; border.color: root.selectedProfile === modelData.slug ? "#7598bd" : "transparent"
                       Row { anchors.fill: parent; anchors.margins: 9; spacing: 10
@@ -708,19 +708,19 @@ ShellRoot {
                 Column {
                   anchors.fill: parent; anchors.margins: 20; spacing: 13
                   property var current: root.profileBySlug(root.selectedProfile)
-                  Row { width: parent.width
-                    Column { spacing: 5
+                  Row { width: parent.width; spacing: 8
+                    Column { id: profileTitleColumn; spacing: 5
                       Text { text: parent.parent.parent.current.slug || "Choose a profile"; color: root.text; font.pixelSize: 17; font.bold: true }
                       Text { text: "PROFILE SETTINGS"; color: root.muted; font.pixelSize: 9; font.letterSpacing: 1.3 }
                     }
-                    Item { width: 1; height: 1; Layout.fillWidth: true }
+                    Item { width: Math.max(0, parent.width - profileTitleColumn.implicitWidth - 297 - 16); height: 1 }
                     Row { spacing: 7
                       Rectangle { width: 100; height: 34; radius: 2; color: root.selectedFill; border.color: root.border
-                        Text { anchors.centerIn: parent; text: "Use this profile"; color: root.accent; font.pixelSize: 9; font.bold: true }
+                        Text { anchors.centerIn: parent; text: "Use this profile"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
                         MouseArea { anchors.fill: parent; onClicked: root.request("POST", "/api/profile/use", {profile: root.selectedProfile}, function(){root.notice = "Default profile changed"; root.refresh()}) }
                       }
                       Rectangle { width: 101; height: 34; radius: 2; color: root.selectedFill; border.color: root.border
-                        Text { anchors.centerIn: parent; text: root.selectedProfile === root.managerProfile ? "★ Manager" : "Set manager"; color: root.blue; font.pixelSize: 9; font.bold: true }
+                        Text { anchors.centerIn: parent; text: root.selectedProfile === root.managerProfile ? "★ Manager" : "Set manager"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
                         MouseArea { anchors.fill: parent; onClicked: root.profileControl("manager") }
                       }
                       Rectangle { width: 82; height: 34; radius: 2; color: root.raised; border.color: root.border
@@ -734,7 +734,7 @@ ShellRoot {
                     Column { width: parent.width * 0.53; spacing: 6
                       Text { text: "DEFAULT MODEL"; color: root.muted; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.7 }
                       Row { width: parent.width; spacing: 7
-                        TextField { id: modelInput; width: parent.width - 91; height: 38; text: parent.parent.parent.parent.current.model || ""; color: root.text; font.pixelSize: 11; placeholderText: "provider/model-name"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                        TextField { leftPadding: 9; rightPadding: 9; id: modelInput; width: parent.width - 91; height: 38; text: parent.parent.parent.parent.current.model || ""; color: root.text; font.pixelSize: 11; placeholderText: "provider/model-name"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                         Rectangle { width: 84; height: 38; radius: 2; color: root.accent; border.color: root.border
                           Text { anchors.centerIn: parent; text: "Browse models"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
                           MouseArea { anchors.fill: parent; onClicked: { root.showModels = true; if (!root.modelCatalog.length) root.loadModelCatalog(false) } }
@@ -743,11 +743,11 @@ ShellRoot {
                     }
                     Column { width: parent.width * 0.27; spacing: 6
                       Text { text: "PROVIDER"; color: root.muted; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.7 }
-                      TextField { id: providerInput; width: parent.width; height: 38; text: parent.parent.parent.current.provider || ""; color: root.text; font.pixelSize: 11; placeholderText: "auto"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                      TextField { leftPadding: 9; rightPadding: 9; id: providerInput; width: parent.width; height: 38; text: parent.parent.parent.current.provider || ""; color: root.text; font.pixelSize: 11; placeholderText: "auto"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                     }
                     Column { width: parent.width * 0.20 - 24; spacing: 6
                       Text { text: "REASONING"; color: root.muted; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.7 }
-                      TextField { id: reasoningInput; width: parent.width; height: 38; text: parent.parent.parent.current.reasoning || "medium"; color: root.text; font.pixelSize: 11; placeholderText: "low / medium / high"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                      TextField { leftPadding: 9; rightPadding: 9; id: reasoningInput; width: parent.width; height: 38; text: parent.parent.parent.current.reasoning || "medium"; color: root.text; font.pixelSize: 11; placeholderText: "low / medium / high"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                     }
                   }
                   Column { width: parent.width; spacing: 7
@@ -757,8 +757,8 @@ ShellRoot {
                       Text { text: (root.currentProfile().configured_api_keys || []).indexOf(root.keyEnvName()) >= 0 ? "Saved privately for this profile" : "No key saved for this provider"; color: (root.currentProfile().configured_api_keys || []).indexOf(root.keyEnvName()) >= 0 ? root.accent : root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
                     }
                     Row { width: parent.width; height: 38; spacing: 8
-                      TextField { id: customKeyName; visible: keyProvider.currentIndex === 10; width: visible ? 160 : 0; height: 36; text: "CUSTOM_API_KEY"; color: root.text; font.pixelSize: 9; placeholderText: "CUSTOM_API_KEY"; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-                      TextField { id: profileKeyInput; width: parent.width - (keyProvider.currentIndex === 10 ? 435 : 275); height: 36; echoMode: TextInput.Password; color: root.text; font.pixelSize: 10; placeholderText: "Paste or replace this profile’s API key"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                      TextField { leftPadding: 9; rightPadding: 9; id: customKeyName; visible: keyProvider.currentIndex === 10; width: visible ? 160 : 0; height: 36; text: "CUSTOM_API_KEY"; color: root.text; font.pixelSize: 9; placeholderText: "CUSTOM_API_KEY"; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                      TextField { leftPadding: 9; rightPadding: 9; id: profileKeyInput; width: parent.width - (keyProvider.currentIndex === 10 ? 435 : 275); height: 36; echoMode: TextInput.Password; color: root.text; font.pixelSize: 10; placeholderText: "Paste or replace this profile’s API key"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                       Rectangle { width: 84; height: 34; radius: 2; color: root.accent; anchors.verticalCenter: parent.verticalCenter
                         Text { anchors.centerIn: parent; text: "Save key"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
                         MouseArea { anchors.fill: parent; onClicked: root.saveProfileKey() }
@@ -769,12 +769,11 @@ ShellRoot {
                       }
                     }
                   }
-                  Row { width: parent.width
-                    Text { text: "PERSONALITY & SYSTEM VOICE"; color: root.muted; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.8 }
-                    Item { width: 1; height: 1; Layout.fillWidth: true }
-                    Text { text: "Edit the complete SOUL.md"; color: root.muted; font.pixelSize: 9 }
+                  Item { width: parent.width; height: 18
+                    Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: "PERSONALITY & SYSTEM VOICE"; color: root.muted; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.8 }
+                    Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: "Edit the complete SOUL.md"; color: root.muted; font.pixelSize: 9 }
                   }
-                  TextArea { id: soulInput; width: parent.width; height: root.advancedMode ? parent.height * 0.36 : parent.height - 356; text: parent.current.personality || ""; color: root.text; font.pixelSize: 11; wrapMode: TextEdit.Wrap; selectByMouse: true; placeholderText: "Describe how this profile should think, speak, and work…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                  TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: soulInput; width: parent.width; height: root.advancedMode ? parent.height * 0.36 : parent.height - 356; text: parent.current.personality || ""; color: root.text; font.pixelSize: 11; wrapMode: TextEdit.Wrap; selectByMouse: true; placeholderText: "Describe how this profile should think, speak, and work…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                   Row { width: parent.width; spacing: 10
                     Rectangle { width: 125; height: 34; radius: 2; color: root.accent
                       Text { anchors.centerIn: parent; text: "Save profile"; color: "#ffffff"; font.pixelSize: 10; font.bold: true }
@@ -793,7 +792,7 @@ ShellRoot {
                     }
                     Text { text: "Key values are never displayed"; color: root.muted; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
                   }
-                  TextArea { id: advancedInput; width: parent.width; height: root.advancedMode ? parent.height * 0.40 : 0; visible: root.advancedMode; color: root.text; font.family: "monospace"; font.pixelSize: 9; wrapMode: TextEdit.NoWrap; selectByMouse: true; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                  TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: advancedInput; width: parent.width; height: root.advancedMode ? parent.height * 0.40 : 0; visible: root.advancedMode; color: root.text; font.family: "monospace"; font.pixelSize: 9; wrapMode: TextEdit.NoWrap; selectByMouse: true; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                 }
               }
             }
@@ -803,29 +802,29 @@ ShellRoot {
               Row { width: parent.width; height: 34; spacing: 8
                 ComboBox { id: projectSwitch; width: 154; height: 30; model: root.activeProjects().map(function(p){return p.name || p.slug}); currentIndex: Math.max(0, root.activeProjects().map(function(p){return p.slug}).indexOf(root.currentBoard)); onActivated: root.openProject(root.activeProjects()[currentIndex].slug); contentItem: Text { text: projectSwitch.displayText; color: root.text; font.pixelSize: 10; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 8 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                 Text { text: root.tasks.length + " cards"; color: root.muted; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
-                TextField { id: taskSearchInput; width: Math.min(280, parent.width * 0.28); height: 30; placeholderText: "Search title, profile, tag, ID…"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; onTextChanged: root.taskSearch = text; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                TextField { leftPadding: 9; rightPadding: 9; id: taskSearchInput; width: Math.min(280, parent.width * 0.28); height: 30; placeholderText: "Search title, profile, tag, ID…"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; onTextChanged: root.taskSearch = text; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                 Item { width: Math.max(1, parent.width - 154 - 48 - taskSearchInput.width - 120 - 32); height: 1 }
                 Rectangle { width: 116; height: 30; color: root.accent; border.color: root.border
                   Text { anchors.centerIn: parent; text: "+  New task"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
                   MouseArea { anchors.fill: parent; onClicked: root.prepareNewTask() }
                 }
               }
-              Row { width: parent.width; height: 32; spacing: 6
-                ComboBox { id: statusFilter; width: 120; height: 28; model: ["All statuses", "Triage", "Todo", "Ready", "Running", "Review", "Blocked", "Scheduled", "Done"]; currentIndex: 0; onActivated: root.statusFilterValue = currentIndex === 0 ? "all" : currentText.toLowerCase(); contentItem: Text { text: statusFilter.displayText; color: root.text; font.pixelSize: 8; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 7 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-                ComboBox { id: assigneeFilter; width: 132; height: 28; model: ["All profiles"].concat(root.profiles.map(function(p){return p.slug})); currentIndex: 0; onActivated: root.assigneeFilterValue = currentIndex === 0 ? "all" : currentText; contentItem: Text { text: assigneeFilter.displayText; color: root.text; font.pixelSize: 8; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 7 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-                ComboBox { id: savedViewPicker; width: 150; height: 28; model: ["Saved views"].concat(root.savedViews.filter(function(v){return v.board === root.currentBoard}).map(function(v){return v.name})); onActivated: if (currentIndex > 0) root.applySavedView(currentText); contentItem: Text { text: savedViewPicker.displayText; color: root.text; font.pixelSize: 8; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 7 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-                Rectangle { width: 27; height: 27; color: root.raised; border.color: root.border; visible: savedViewPicker.currentIndex > 0
+              Row { width: parent.width; height: 34; spacing: 8
+                ComboBox { id: statusFilter; width: 120; height: 30; model: ["All statuses", "Triage", "Todo", "Ready", "Running", "Review", "Blocked", "Scheduled", "Done"]; currentIndex: 0; onActivated: root.statusFilterValue = currentIndex === 0 ? "all" : currentText.toLowerCase(); contentItem: Text { text: statusFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 8 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                ComboBox { id: assigneeFilter; width: 132; height: 30; model: ["All profiles"].concat(root.profiles.map(function(p){return p.slug})); currentIndex: 0; onActivated: root.assigneeFilterValue = currentIndex === 0 ? "all" : currentText; contentItem: Text { text: assigneeFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 8 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                ComboBox { id: savedViewPicker; width: 150; height: 30; model: ["Saved views"].concat(root.savedViews.filter(function(v){return v.board === root.currentBoard}).map(function(v){return v.name})); onActivated: if (currentIndex > 0) root.applySavedView(currentText); contentItem: Text { text: savedViewPicker.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 8 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                Rectangle { width: 30; height: 30; color: root.raised; border.color: root.border; visible: savedViewPicker.currentIndex > 0
                   Text { anchors.centerIn: parent; text: "−"; color: root.red; font.pixelSize: 14 }
                   MouseArea { anchors.fill: parent; onClicked: root.deleteSavedView(savedViewPicker.currentText) }
                 }
                 Rectangle { width: 1; height: 22; color: root.border; anchors.verticalCenter: parent.verticalCenter }
-                Text { text: root.selectedTaskIds.length ? root.selectedTaskIds.length + " selected" : "Select cards for bulk actions"; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
-                ComboBox { id: bulkAssignee; width: 114; height: 28; model: ["Assign to…"].concat(root.assignableProfiles().map(function(p){return p.slug})); currentIndex: 0; contentItem: Text { text: bulkAssignee.displayText; color: root.text; font.pixelSize: 8; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 7 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-                Rectangle { width: 54; height: 27; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Assign"; color: root.text; font.pixelSize: 8 } MouseArea { anchors.fill: parent; enabled: root.selectedTaskIds.length > 0 && bulkAssignee.currentIndex > 0; onClicked: root.bulkAction("assign") } }
-                Rectangle { width: 60; height: 27; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Complete"; color: root.text; font.pixelSize: 8 } MouseArea { anchors.fill: parent; enabled: root.selectedTaskIds.length > 0; onClicked: root.bulkAction("complete") } }
+                Text { text: root.selectedTaskIds.length ? root.selectedTaskIds.length + " selected" : "Select cards for bulk actions"; color: root.muted; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
+                ComboBox { id: bulkAssignee; width: 128; height: 30; model: ["Assign to…"].concat(root.assignableProfiles().map(function(p){return p.slug})); currentIndex: 0; contentItem: Text { text: bulkAssignee.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 8 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                Rectangle { width: 64; height: 30; color: root.selectedTaskIds.length > 0 && bulkAssignee.currentIndex > 0 ? root.selectedFill : root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Assign"; color: root.text; font.pixelSize: 9 } MouseArea { anchors.fill: parent; enabled: root.selectedTaskIds.length > 0 && bulkAssignee.currentIndex > 0; onClicked: root.bulkAction("assign") } }
+                Rectangle { width: 72; height: 30; color: root.selectedTaskIds.length > 0 ? root.selectedFill : root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Complete"; color: root.text; font.pixelSize: 9 } MouseArea { anchors.fill: parent; enabled: root.selectedTaskIds.length > 0; onClicked: root.bulkAction("complete") } }
               }
-              Row { width: parent.width; height: 19; spacing: 6
-                Text { text: "Filters:"; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
+              Row { width: parent.width; height: 19; spacing: 10
+                Text { text: "FILTERS"; color: root.muted; font.pixelSize: 8; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
                 Text { visible: root.statusFilterValue !== "all"; text: "Status · " + root.statusFilterValue; color: root.accent; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
                 Text { visible: root.assigneeFilterValue !== "all"; text: "Profile · " + root.assigneeFilterValue; color: root.accent; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
                 Text { visible: root.taskSearch.length > 0; text: "Search · “" + root.taskSearch + "”"; color: root.accent; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter; elide: Text.ElideRight; width: 180 }
@@ -863,22 +862,24 @@ ShellRoot {
                             Repeater { model: root.laneTasks(lane.modelData.statuses)
                               delegate: Rectangle { id: taskCard; required property var modelData; width: laneCards.width; height: 127; color: cardHover.containsMouse ? root.hoverFill : root.surface; border.color: root.selectedTaskIds.indexOf(modelData.id) >= 0 ? root.accent : root.border
                               MouseArea { id: cardHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.LeftButton; onClicked: root.selectTask(taskCard.modelData) }
-                                Column { anchors.fill: parent; anchors.margins: 8; spacing: 5
-                                  Row { width: parent.width; height: 17
+                                Column { anchors.fill: parent; anchors.margins: 8; spacing: 4
+                                  Row { width: parent.width; height: 18; spacing: 6
                                     Rectangle { width: 16; height: 16; color: root.raised; border.color: root.border
                                       Text { anchors.centerIn: parent; text: root.selectedTaskIds.indexOf(taskCard.modelData.id) >= 0 ? "✓" : ""; color: root.accent; font.pixelSize: 10; font.bold: true }
                                       MouseArea { anchors.fill: parent; onClicked: root.toggleTaskSelection(taskCard.modelData.id) }
                                     }
-                                    Text { text: "#" + modelData.id.replace("t_", ""); color: root.muted; font.family: "monospace"; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
-                                    Text { text: modelData.status; color: root.blue; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
-                                    Item { width: 1; height: 1; Layout.fillWidth: true }
-                                    Text { text: "P" + (Number(modelData.priority || 0) + 1); color: Number(modelData.priority || 0) > 0 ? root.amber : root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
+                                    Text { id: cardIdLabel; text: "#" + modelData.id.replace("t_", ""); color: root.muted; font.family: "monospace"; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
+                                    Rectangle { id: cardStatusPill; width: cardStatusText.implicitWidth + 12; height: 17; color: root.selectedFill; anchors.verticalCenter: parent.verticalCenter
+                                      Text { id: cardStatusText; anchors.centerIn: parent; text: modelData.status; color: "#ffffff"; font.pixelSize: 8 }
+                                    }
+                                    Item { width: Math.max(0, parent.width - 16 - cardIdLabel.implicitWidth - cardStatusPill.width - cardPriorityLabel.implicitWidth - 18); height: 1 }
+                                    Text { id: cardPriorityLabel; text: "P" + (Number(modelData.priority || 0) + 1); color: Number(modelData.priority || 0) > 0 ? root.amber : root.muted; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
                                   }
-                                  Text { text: modelData.title; color: root.text; font.pixelSize: 10; font.bold: true; wrapMode: Text.WordWrap; maximumLineCount: 3; elide: Text.ElideRight; width: parent.width; height: 38 }
-                                  Text { text: modelData.assignee ? "Assigned: " + modelData.assignee : "Unassigned"; color: root.blue; font.pixelSize: 8; elide: Text.ElideRight; width: parent.width }
-                                  Text { text: "Can work: " + root.taskProfileLabel(modelData); color: root.muted; font.pixelSize: 8; elide: Text.ElideRight; width: parent.width }
-                                  Row { width: parent.width
-                                    Text { text: (modelData.tags || []).slice(0,2).join(" · ") || "No tags"; color: root.muted; font.pixelSize: 8; elide: Text.ElideRight; width: parent.width * .60; anchors.verticalCenter: parent.verticalCenter }
+                                  Text { text: modelData.title; color: root.text; font.pixelSize: 11; font.bold: true; wrapMode: Text.WordWrap; maximumLineCount: 3; elide: Text.ElideRight; width: parent.width; height: 43 }
+                                  Text { text: modelData.assignee ? "Assigned: " + modelData.assignee : "Unassigned"; color: root.blue; font.pixelSize: 9; elide: Text.ElideRight; width: parent.width }
+                                  Text { text: "Can work: " + root.taskProfileLabel(modelData); color: root.muted; font.pixelSize: 9; elide: Text.ElideRight; width: parent.width }
+                                  Row { width: parent.width; spacing: 6
+                                    Text { text: (modelData.tags || []).slice(0,2).join(" · ") || "No tags"; color: root.muted; font.pixelSize: 9; elide: Text.ElideRight; width: parent.width * .60; anchors.verticalCenter: parent.verticalCenter }
                                     Item { width: 1; height: 1; Layout.fillWidth: true }
                                     Text { text: modelData.has_estimate ? money(modelData.estimated_cost) : "—"; color: modelData.has_estimate ? root.accent : root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
                                   }
@@ -899,7 +900,7 @@ ShellRoot {
             Column { anchors.fill: parent; anchors.margins: 24; spacing: 16; visible: root.page === "Prompts"
               Row { width: parent.width; height: 44
                 Column { spacing: 4; Text { text: "Saved prompts"; color: root.text; font.pixelSize: 15; font.bold: true } Text { text: root.prompts.length + " reusable prompts · " + root.prompts.filter(function(p){return p.favorite}).length + " favorites"; color: root.muted; font.pixelSize: 9 } }
-                TextField { id: promptSearchInput; width: 220; height: 30; placeholderText: "Search prompts…"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                TextField { leftPadding: 9; rightPadding: 9; id: promptSearchInput; width: 220; height: 30; placeholderText: "Search prompts…"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                 Rectangle { width: 120; height: 36; radius: 2; color: root.accent
                   Row { anchors.centerIn: parent; spacing: 6; Text { text: "+"; color: "#ffffff"; font.pixelSize: 16 } Text { text: "Add prompt"; color: "#ffffff"; font.pixelSize: 10; font.bold: true } }
                   MouseArea { anchors.fill: parent; onClicked: root.editPrompt(null) }
@@ -961,18 +962,18 @@ ShellRoot {
               Item { width: 24; height: 20 }
             }
             Text { text: "PROJECT NAME"; color: root.muted; font.pixelSize: 8; font.bold: true }
-            TextField { id: projectName; width: parent.width; height: 36; placeholderText: "e.g. Desktop refresh"; color: root.text; font.pixelSize: 10; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            TextField { leftPadding: 9; rightPadding: 9; id: projectName; width: parent.width; height: 36; placeholderText: "e.g. Desktop refresh"; color: root.text; font.pixelSize: 10; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Text { text: "PROJECT ID"; color: root.muted; font.pixelSize: 8; font.bold: true }
-            TextField { id: projectSlug; width: parent.width; height: 36; placeholderText: "e.g. desktop-refresh"; enabled: !root.editingProject; color: root.text; font.pixelSize: 10; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            TextField { leftPadding: 9; rightPadding: 9; id: projectSlug; width: parent.width; height: 36; placeholderText: "e.g. desktop-refresh"; enabled: !root.editingProject; color: root.text; font.pixelSize: 10; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Text { text: "DESCRIPTION"; color: root.muted; font.pixelSize: 8; font.bold: true }
-            TextArea { id: projectDescription; width: parent.width; height: 75; placeholderText: "What is this project trying to achieve?"; color: root.text; font.pixelSize: 9; wrapMode: TextEdit.Wrap; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: projectDescription; width: parent.width; height: 75; placeholderText: "What is this project trying to achieve?"; color: root.text; font.pixelSize: 9; wrapMode: TextEdit.Wrap; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Row { width: parent.width; spacing: 10
-              Column { width: parent.width * .5 - 5; spacing: 5; Text { text: "OWNER"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { id: projectOwner; width: parent.width; height: 36; placeholderText: "Person or profile"; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
-              Column { width: parent.width * .5 - 5; spacing: 5; Text { text: "PROJECT DUE DATE"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { id: projectDue; width: parent.width; height: 36; placeholderText: "YYYY-MM-DD"; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
+              Column { width: parent.width * .5 - 5; spacing: 5; Text { text: "OWNER"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: projectOwner; width: parent.width; height: 36; placeholderText: "Person or profile"; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
+              Column { width: parent.width * .5 - 5; spacing: 5; Text { text: "PROJECT DUE DATE"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: projectDue; width: parent.width; height: 36; placeholderText: "YYYY-MM-DD"; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
             }
             Row { width: parent.width; spacing: 10
-              Column { width: parent.width * .5 - 5; spacing: 5; Text { text: "BUDGET · USD"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { id: projectBudget; width: parent.width; height: 36; text: "0"; color: root.text; font.pixelSize: 9; inputMethodHints: Qt.ImhFormattedNumbersOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
-              Column { width: parent.width * .5 - 5; spacing: 5; Text { text: "COLOR · HEX"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { id: projectColor; width: parent.width; height: 36; text: "#3584e4"; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
+              Column { width: parent.width * .5 - 5; spacing: 5; Text { text: "BUDGET · USD"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: projectBudget; width: parent.width; height: 36; text: "0"; color: root.text; font.pixelSize: 9; inputMethodHints: Qt.ImhFormattedNumbersOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
+              Column { width: parent.width * .5 - 5; spacing: 5; Text { text: "COLOR · HEX"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: projectColor; width: parent.width; height: 36; text: "#3584e4"; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
             }
             Row { spacing: 9
               Rectangle { width: 118; height: 36; radius: 2; color: root.accent; Text { anchors.centerIn: parent; text: root.editingProject ? "Save project" : "Create project"; color: "#ffffff"; font.pixelSize: 9; font.bold: true } MouseArea { anchors.fill: parent; onClicked: root.saveProject() } }
@@ -998,25 +999,25 @@ ShellRoot {
               Rectangle { width: 84; height: 32; radius: 2; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Save template"; color: root.text; font.pixelSize: 8 } MouseArea { anchors.fill: parent; onClicked: root.saveTaskTemplate() } }
             }
             Text { text: "TITLE"; color: root.muted; font.pixelSize: 9; font.bold: true }
-            TextField { id: newTitle; width: parent.width; height: 40; color: root.text; font.pixelSize: 11; placeholderText: "What needs to get done?"; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            TextField { leftPadding: 9; rightPadding: 9; id: newTitle; width: parent.width; height: 40; color: root.text; font.pixelSize: 11; placeholderText: "What needs to get done?"; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Text { text: "DESCRIPTION"; color: root.muted; font.pixelSize: 9; font.bold: true }
-            TextArea { id: newBody; width: parent.width; height: 82; color: root.text; font.pixelSize: 10; wrapMode: TextEdit.Wrap; placeholderText: "Context, acceptance criteria, useful links…"; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: newBody; width: parent.width; height: 82; color: root.text; font.pixelSize: 10; wrapMode: TextEdit.Wrap; placeholderText: "Context, acceptance criteria, useful links…"; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Row { width: parent.width; spacing: 12
               Column { width: parent.width * 0.5 - 6; spacing: 6; Text { text: "ASSIGNEE"; color: root.muted; font.pixelSize: 9; font.bold: true }
                 ComboBox { id: newAssignee; width: parent.width; height: 38; model: ["Unassigned"].concat(root.newTaskAssigneeNames()); currentIndex: 0 }
               }
               Column { width: parent.width * 0.5 - 6; spacing: 6; Text { text: "PRIORITY  ·  0–4"; color: root.muted; font.pixelSize: 9; font.bold: true }
-                TextField { id: newPriority; width: parent.width; height: 38; text: "0"; color: root.text; inputMethodHints: Qt.ImhDigitsOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                TextField { leftPadding: 9; rightPadding: 9; id: newPriority; width: parent.width; height: 38; text: "0"; color: root.text; inputMethodHints: Qt.ImhDigitsOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               }
             }
             Row { width: parent.width; spacing: 12
               Column { width: parent.width * 0.5 - 6; spacing: 6; Text { text: "WORKSPACE"; color: root.muted; font.pixelSize: 9; font.bold: true } ComboBox { id: newWorkspace; width: parent.width; height: 38; model: ["scratch", "worktree"] } }
-              Column { width: parent.width * 0.5 - 6; spacing: 6; Text { text: "COST ESTIMATE · USD"; color: root.muted; font.pixelSize: 9; font.bold: true } TextField { id: newCost; width: parent.width; height: 38; placeholderText: "Optional"; color: root.text; inputMethodHints: Qt.ImhFormattedNumbersOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
+              Column { width: parent.width * 0.5 - 6; spacing: 6; Text { text: "COST ESTIMATE · USD"; color: root.muted; font.pixelSize: 9; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: newCost; width: parent.width; height: 38; placeholderText: "Optional"; color: root.text; inputMethodHints: Qt.ImhFormattedNumbersOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
             }
             Row { width: parent.width; spacing: 8
-              Column { width: parent.width * .30 - 6; spacing: 4; Text { text: "DUE DATE"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { id: newDue; width: parent.width; height: 34; placeholderText: "YYYY-MM-DD"; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
-              Column { width: parent.width * .25 - 6; spacing: 4; Text { text: "EFFORT · HOURS"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { id: newEffort; width: parent.width; height: 34; text: "0"; color: root.text; font.pixelSize: 9; inputMethodHints: Qt.ImhFormattedNumbersOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
-              Column { width: parent.width * .45 - 6; spacing: 4; Text { text: "TAGS · comma separated"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { id: newTags; width: parent.width; height: 34; placeholderText: "bug, launch, docs"; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
+              Column { width: parent.width * .30 - 6; spacing: 4; Text { text: "DUE DATE"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: newDue; width: parent.width; height: 34; placeholderText: "YYYY-MM-DD"; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
+              Column { width: parent.width * .25 - 6; spacing: 4; Text { text: "EFFORT · HOURS"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: newEffort; width: parent.width; height: 34; text: "0"; color: root.text; font.pixelSize: 9; inputMethodHints: Qt.ImhFormattedNumbersOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
+              Column { width: parent.width * .45 - 6; spacing: 4; Text { text: "TAGS · comma separated"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: newTags; width: parent.width; height: 34; placeholderText: "bug, launch, docs"; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
             }
             Column { width: parent.width; spacing: 4
               Text { text: "WHO CAN WORK ON THIS TASK"; color: root.muted; font.pixelSize: 9; font.bold: true }
@@ -1047,7 +1048,7 @@ ShellRoot {
           Column { anchors.fill: parent; anchors.margins: 24; anchors.topMargin: 50; spacing: 14
             Row { width: parent.width; Text { text: "Start with Hermes"; color: root.text; font.pixelSize: 18; font.bold: true } Item { width: 1; height: 1; Layout.fillWidth: true } Item { width: 24; height: 20 } }
             Text { text: root.managerProfile ? "This prompt will run with manager profile “" + root.managerProfile + "”." : "No manager selected · using the active default profile."; color: root.muted; font.pixelSize: 10 }
-            TextArea { id: hermesPrompt; width: parent.width; height: 105; color: root.text; font.pixelSize: 11; wrapMode: TextEdit.Wrap; placeholderText: "What would you like Hermes to do?"; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: hermesPrompt; width: parent.width; height: 105; color: root.text; font.pixelSize: 11; wrapMode: TextEdit.Wrap; placeholderText: "What would you like Hermes to do?"; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Rectangle { width: 128; height: 38; radius: 2; color: root.accent
               Text { anchors.centerIn: parent; text: "Launch prompt"; color: "#ffffff"; font.pixelSize: 10; font.bold: true }
               MouseArea { anchors.fill: parent; onClicked: root.request("POST", "/api/hermes", {prompt: hermesPrompt.text}, function(d){root.showHermes = false; root.notice = d.message || "Hermes started"}) }
@@ -1069,13 +1070,13 @@ ShellRoot {
             Rectangle { width: parent.width; height: 1; color: root.border }
             Row { width: parent.width; spacing: 16
               Column { width: parent.width * .40 - 10; spacing: 6; Text { text: "ASSIGNEE"; color: root.muted; font.pixelSize: 9; font.bold: true } ComboBox { id: taskAssignee; width: parent.width; height: 38; model: ["Unassigned"].concat(root.taskAssigneeNames()); currentIndex: root.selectedTask ? Math.max(0, model.indexOf(root.selectedTask.assignee || "Unassigned")) : 0 } }
-              Column { width: parent.width * .20 - 10; spacing: 6; Text { text: "PRIORITY"; color: root.muted; font.pixelSize: 9; font.bold: true } TextField { id: taskPriority; width: parent.width; height: 38; text: root.selectedTask ? String(root.selectedTask.priority || 0) : "0"; color: root.text; inputMethodHints: Qt.ImhDigitsOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
-              Column { width: parent.width * .40 - 10; spacing: 6; Text { text: "ESTIMATED COST · USD"; color: root.muted; font.pixelSize: 9; font.bold: true } TextField { id: taskCost; width: parent.width; height: 38; text: root.selectedTask && root.selectedTask.has_estimate ? String(root.selectedTask.estimated_cost) : ""; placeholderText: "No estimate"; color: root.text; inputMethodHints: Qt.ImhFormattedNumbersOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
+              Column { width: parent.width * .20 - 10; spacing: 6; Text { text: "PRIORITY"; color: root.muted; font.pixelSize: 9; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: taskPriority; width: parent.width; height: 38; text: root.selectedTask ? String(root.selectedTask.priority || 0) : "0"; color: root.text; inputMethodHints: Qt.ImhDigitsOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
+              Column { width: parent.width * .40 - 10; spacing: 6; Text { text: "ESTIMATED COST · USD"; color: root.muted; font.pixelSize: 9; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: taskCost; width: parent.width; height: 38; text: root.selectedTask && root.selectedTask.has_estimate ? String(root.selectedTask.estimated_cost) : ""; placeholderText: "No estimate"; color: root.text; inputMethodHints: Qt.ImhFormattedNumbersOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
             }
             Row { width: parent.width; spacing: 8
-              TextField { id: taskDue; width: 120; height: 32; text: root.selectedTask ? (root.selectedTask.due_date || "") : ""; placeholderText: "Due YYYY-MM-DD"; color: root.text; font.pixelSize: 8; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              TextField { id: taskEffort; width: 85; height: 32; text: root.selectedTask ? String(root.selectedTask.effort_hours || 0) : "0"; placeholderText: "Hours"; color: root.text; font.pixelSize: 8; inputMethodHints: Qt.ImhFormattedNumbersOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              TextField { id: taskTags; width: parent.width - 221; height: 32; text: root.selectedTask ? (root.selectedTask.tags || []).join(", ") : ""; placeholderText: "Tags: bug, docs, launch"; color: root.text; font.pixelSize: 8; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              TextField { leftPadding: 9; rightPadding: 9; id: taskDue; width: 120; height: 32; text: root.selectedTask ? (root.selectedTask.due_date || "") : ""; placeholderText: "Due YYYY-MM-DD"; color: root.text; font.pixelSize: 8; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              TextField { leftPadding: 9; rightPadding: 9; id: taskEffort; width: 85; height: 32; text: root.selectedTask ? String(root.selectedTask.effort_hours || 0) : "0"; placeholderText: "Hours"; color: root.text; font.pixelSize: 8; inputMethodHints: Qt.ImhFormattedNumbersOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              TextField { leftPadding: 9; rightPadding: 9; id: taskTags; width: parent.width - 221; height: 32; text: root.selectedTask ? (root.selectedTask.tags || []).join(", ") : ""; placeholderText: "Tags: bug, docs, launch"; color: root.text; font.pixelSize: 8; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             }
             Column { width: parent.width; spacing: 3
               Text { text: "ELIGIBLE PROFILES"; color: root.muted; font.pixelSize: 9; font.bold: true }
@@ -1105,10 +1106,10 @@ ShellRoot {
               }
             }
             Row { width: parent.width; height: 28; spacing: 8
-              Text { text: "DEPENDENCIES"; color: root.muted; font.pixelSize: 9; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
-              Text { text: root.selectedTaskDetail.parents ? "Blocked by " + root.selectedTaskDetail.parents.length : ""; color: root.amber; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
-              Text { text: root.selectedTaskDetail.children ? " · unlocks " + root.selectedTaskDetail.children.length : ""; color: root.blue; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
-              Item { width: 1; height: 1; Layout.fillWidth: true }
+              Text { id: dependenciesLabel; text: "DEPENDENCIES"; color: root.muted; font.pixelSize: 9; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+              Text { id: blockedCount; text: root.selectedTaskDetail.parents ? "Blocked by " + root.selectedTaskDetail.parents.length : ""; color: root.amber; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
+              Text { id: unlockCount; text: root.selectedTaskDetail.children ? "unlocks " + root.selectedTaskDetail.children.length : ""; color: root.blue; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
+              Item { width: Math.max(0, parent.width - 200 - 58 - 40 - dependenciesLabel.implicitWidth - blockedCount.implicitWidth - unlockCount.implicitWidth); height: 1 }
               ComboBox { id: dependencyTask; width: 200; height: 28; model: root.tasks.filter(function(t){return t.id !== (root.selectedTask ? root.selectedTask.id : "")}).map(function(t){return t.id + " · " + t.title}); contentItem: Text { text: dependencyTask.displayText; color: root.text; font.pixelSize: 8; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 7 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               Rectangle { width: 58; height: 28; radius: 2; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Link"; color: root.text; font.pixelSize: 8 } MouseArea { anchors.fill: parent; onClicked: { var selected = dependencyTask.currentText.split(" · ")[0]; root.request("POST", "/api/task/link", {board: root.currentBoard, parent_id: root.selectedTask.id, child_id: selected}, function(){root.notice="Dependency linked"; root.selectTask(root.selectedTask); root.refresh()}) } } }
             }
@@ -1122,7 +1123,7 @@ ShellRoot {
               }
             }
             Row { width: parent.width; height: 36; spacing: 8
-              TextField { id: taskCommentInput; width: parent.width - 94; height: 34; color: root.text; font.pixelSize: 9; placeholderText: "Add a progress note or handoff…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              TextField { leftPadding: 9; rightPadding: 9; id: taskCommentInput; width: parent.width - 94; height: 34; color: root.text; font.pixelSize: 9; placeholderText: "Add a progress note or handoff…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               Rectangle { width: 86; height: 34; radius: 2; color: root.accent; Text { anchors.centerIn: parent; text: "Comment"; color: "#ffffff"; font.pixelSize: 8; font.bold: true } MouseArea { anchors.fill: parent; onClicked: root.taskComment() } }
             }
             Text { text: "Cost is a planning estimate saved by this app. Actual provider spend depends on model rates and token use."; color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; width: parent.width }
@@ -1142,9 +1143,9 @@ ShellRoot {
               Item { width: 24; height: 20 }
             }
             Text { text: "PROFILE ID"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.8 }
-            TextField { id: newProfileSlug; width: parent.width; height: 36; color: root.text; font.pixelSize: 10; placeholderText: "e.g. ux-reviewer"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            TextField { leftPadding: 9; rightPadding: 9; id: newProfileSlug; width: parent.width; height: 36; color: root.text; font.pixelSize: 10; placeholderText: "e.g. ux-reviewer"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Text { text: "ROLE / DESCRIPTION"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.8 }
-            TextField { id: newProfileRole; width: parent.width; height: 36; color: root.text; font.pixelSize: 10; placeholderText: "What should this profile be good at?"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            TextField { leftPadding: 9; rightPadding: 9; id: newProfileRole; width: parent.width; height: 36; color: root.text; font.pixelSize: 10; placeholderText: "What should this profile be good at?"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Text { text: "CLONE STRATEGY"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.8 }
             ComboBox { id: cloneMode; width: parent.width; height: 36; model: ["Start empty", "Clone config, personality & skills", "Full clone including workspace state"]; contentItem: Text { text: cloneMode.displayText; color: root.text; font.pixelSize: 10; verticalAlignment: Text.AlignVCenter; leftPadding: 10 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Row { width: parent.width; height: 34; spacing: 10
@@ -1153,16 +1154,16 @@ ShellRoot {
             }
             CheckBox { id: copyApiKey; text: "Copy source OpenRouter key"; checked: false; enabled: cloneMode.currentIndex > 0; contentItem: Text { text: copyApiKey.text; color: root.muted; font.pixelSize: 9; leftPadding: 26; verticalAlignment: Text.AlignVCenter } }
             Text { text: "NEW OPENROUTER API KEY · optional"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.8 }
-            TextField { id: newProfileKey; width: parent.width; height: 36; echoMode: TextInput.Password; color: root.text; font.pixelSize: 10; placeholderText: "Stored privately in this profile’s .env"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            TextField { leftPadding: 9; rightPadding: 9; id: newProfileKey; width: parent.width; height: 36; echoMode: TextInput.Password; color: root.text; font.pixelSize: 10; placeholderText: "Stored privately in this profile’s .env"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Row { width: parent.width; height: 32; spacing: 8
-              Text { text: "GENERATED SOUL.md"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.8; anchors.verticalCenter: parent.verticalCenter }
-              Item { width: 1; height: 1; Layout.fillWidth: true }
+              Text { id: generatedSoulLabel; text: "GENERATED SOUL.md"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.8; anchors.verticalCenter: parent.verticalCenter }
+              Item { width: Math.max(0, parent.width - generatedSoulLabel.implicitWidth - 145 - 16); height: 1 }
               Rectangle { width: 145; height: 30; radius: 2; color: root.selectedFill; border.color: root.border
                 Text { anchors.centerIn: parent; text: root.generatingPersonality ? "Generating…" : "✦ Generate from name"; color: root.blue; font.pixelSize: 8; font.bold: true }
                 MouseArea { anchors.fill: parent; enabled: !root.generatingPersonality; onClicked: root.generatePersonality() }
               }
             }
-            TextArea { id: generatedSoul; width: parent.width; height: 180; color: root.text; font.pixelSize: 9; wrapMode: TextEdit.Wrap; selectByMouse: true; placeholderText: "Generate a profile personality from its ID and role, or write one here…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: generatedSoul; width: parent.width; height: 180; color: root.text; font.pixelSize: 9; wrapMode: TextEdit.Wrap; selectByMouse: true; placeholderText: "Generate a profile personality from its ID and role, or write one here…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Row { width: parent.width; height: 36; spacing: 9
               Rectangle { width: 120; height: 36; radius: 2; color: root.accent
                 Text { anchors.centerIn: parent; text: "Create profile"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
@@ -1201,12 +1202,12 @@ ShellRoot {
               Item { width: 24; height: 20 }
             }
             Text { text: "PROMPT NAME"; color: root.muted; font.pixelSize: 8; font.bold: true }
-            TextField { id: promptTitle; width: parent.width; height: 38; color: root.text; font.pixelSize: 10; placeholderText: "e.g. Review a pull request"; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            TextField { leftPadding: 9; rightPadding: 9; id: promptTitle; width: parent.width; height: 38; color: root.text; font.pixelSize: 10; placeholderText: "e.g. Review a pull request"; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Text { text: "PROMPT TEXT"; color: root.muted; font.pixelSize: 8; font.bold: true }
-            TextArea { id: promptBody; width: parent.width; height: 275; color: root.text; font.pixelSize: 10; wrapMode: TextEdit.Wrap; selectByMouse: true; placeholderText: "Write the prompt to reuse…"; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: promptBody; width: parent.width; height: 275; color: root.text; font.pixelSize: 10; wrapMode: TextEdit.Wrap; selectByMouse: true; placeholderText: "Write the prompt to reuse…"; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Row { width: parent.width; spacing: 12
               CheckBox { id: promptFavorite; checked: true; text: "Favorite"; contentItem: Text { text: promptFavorite.text; color: root.amber; font.pixelSize: 9; leftPadding: 25; verticalAlignment: Text.AlignVCenter } }
-              Item { width: 1; height: 1; Layout.fillWidth: true }
+              Item { width: Math.max(0, parent.width - promptFavorite.implicitWidth - 106 - 82 - 36); height: 1 }
               Rectangle { width: 106; height: 36; radius: 2; color: root.accent; Text { anchors.centerIn: parent; text: "Save prompt"; color: "#ffffff"; font.pixelSize: 9; font.bold: true } MouseArea { anchors.fill: parent; onClicked: root.savePrompt() } }
               Rectangle { width: 82; height: 36; radius: 2; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Cancel"; color: root.muted; font.pixelSize: 9 } MouseArea { anchors.fill: parent; onClicked: root.showPromptEditor = false } }
             }
@@ -1222,11 +1223,11 @@ ShellRoot {
           MouseArea { anchors.fill: parent }
           Column { anchors.fill: parent; anchors.margins: 22; anchors.topMargin: 50; spacing: 13
             Row { width: parent.width; height: 44
-              Column { spacing: 4
+              Column { id: catalogHeading; spacing: 4
                 Text { text: "OpenRouter model catalog"; color: root.text; font.pixelSize: 18; font.bold: true }
                 Text { text: root.modelCatalogLoading ? "Fetching live catalog…" : root.modelCatalog.length + " models · " + (root.modelCatalogStale ? "cached, refresh failed" : root.modelCatalogSource === "live" ? "live catalog" : "cached catalog") + (root.modelCatalogFetchedAt ? " · updated " + new Date(root.modelCatalogFetchedAt * 1000).toLocaleString() : ""); color: root.muted; font.pixelSize: 9 }
               }
-              Item { width: 1; height: 1; Layout.fillWidth: true }
+              Item { width: Math.max(0, parent.width - catalogHeading.implicitWidth - 88 - 24); height: 1 }
               Rectangle { width: 88; height: 34; radius: 2; color: root.raised; border.color: root.border
                 Text { anchors.centerIn: parent; text: root.modelCatalogLoading ? "Loading…" : "↻ Refresh"; color: root.accent; font.pixelSize: 9; font.bold: true }
                 MouseArea { anchors.fill: parent; enabled: !root.modelCatalogLoading; onClicked: root.loadModelCatalog(true) }
@@ -1234,11 +1235,11 @@ ShellRoot {
               Item { width: 24; height: 20 }
             }
             Row { width: parent.width; height: 40; spacing: 9
-              TextField { id: modelSearch; width: 355; height: 38; color: root.text; font.pixelSize: 10; placeholderText: "Search model names, providers, capabilities…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              TextField { leftPadding: 9; rightPadding: 9; id: modelSearch; width: 355; height: 38; color: root.text; font.pixelSize: 10; placeholderText: "Search model names, providers, capabilities…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               ComboBox { id: modelUseFilter; width: 200; height: 38; model: ["All uses", "Favorites", "Text & chat", "Coding", "Vision", "Image generation", "Audio", "Video", "Embeddings", "Reranking", "Decision", "Files & documents", "Other"]; contentItem: Text { text: modelUseFilter.displayText; color: root.text; font.pixelSize: 10; verticalAlignment: Text.AlignVCenter; leftPadding: 10 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               ComboBox { id: catalogSort; width: 220; height: 38; model: ["Group by use", "Input cost · low to high", "Output cost · low to high", "Average cost · low to high", "Input cost · high to low", "Output cost · high to low", "OpenRouter order"]; contentItem: Text { text: catalogSort.displayText; color: root.text; font.pixelSize: 10; verticalAlignment: Text.AlignVCenter; leftPadding: 10 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              Item { width: 1; height: 1; Layout.fillWidth: true }
-              Text { text: root.catalogItems.length + " shown"; color: root.muted; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
+              Item { width: Math.max(0, parent.width - 355 - 200 - 220 - 36 - catalogCount.implicitWidth); height: 1 }
+              Text { id: catalogCount; text: root.catalogItems.length + " shown"; color: root.muted; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
             }
             Row { width: parent.width; height: 28; spacing: 8
               Text { text: "MODEL"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 1; width: parent.width * 0.55; leftPadding: 12; anchors.verticalCenter: parent.verticalCenter }

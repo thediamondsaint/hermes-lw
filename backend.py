@@ -368,13 +368,28 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
+    def request_is_local(self):
+        host = (self.headers.get("Host") or "").lower()
+        origin = self.headers.get("Origin")
+        valid_hosts = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
+        valid_origins = {None, "null", "file://", f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
+        opaque_cross_site = origin == "null" and self.headers.get("Sec-Fetch-Site", "").lower() == "cross-site"
+        if host not in valid_hosts or origin not in valid_origins or opaque_cross_site:
+            self.send_json({"error": "Only the local Hermes LW app may use this API"}, 403)
+            return False
+        return True
+
     def send_json(self, data, status=200):
         body = json.dumps(data).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        origin = self.headers.get("Origin")
+        local_opaque_origin = origin == "null" and self.headers.get("Sec-Fetch-Site", "").lower() != "cross-site"
+        if local_opaque_origin or origin in ("file://", f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.end_headers()
         self.wfile.write(body)
 
@@ -382,9 +397,11 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
 
     def do_OPTIONS(self):
+        if not self.request_is_local(): return
         self.send_json({})
 
     def do_GET(self):
+        if not self.request_is_local(): return
         try:
             if self.path.startswith("/api/state"):
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -405,6 +422,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, 500)
 
     def do_POST(self):
+        if not self.request_is_local(): return
         try:
             payload = self.read_body()
             if self.path == "/api/profile/save":
