@@ -43,30 +43,134 @@ ShellRoot {
   property bool showModels: false
   property bool modelCatalogLoading: false
   property var modelCatalog: []
+  property var modelProviders: []
   property string modelCatalogSource: ""
   property bool modelCatalogStale: false
   property double modelCatalogFetchedAt: 0
+  property var catalogPublishers: {
+    var found = {}
+    for (var i = 0; i < root.modelCatalog.length; ++i) found[root.modelPublisher(root.modelCatalog[i])] = true
+    return ["All publishers"].concat(Object.keys(found).sort())
+  }
+  function modelPublisher(model) {
+    var id = String(model.id || "")
+    return id.indexOf("/") >= 0 ? id.split("/")[0] : "Other"
+  }
+  function catalogContextBand(model) {
+    var n = Number(model.context_length || 0)
+    if (!n) return "Unknown context"
+    if (n < 32000) return "Under 32K"
+    if (n < 128000) return "32K–128K"
+    if (n < 512000) return "128K–512K"
+    if (n < 1000000) return "512K–1M"
+    return "1M+"
+  }
+  function catalogPriceBand(model, key) {
+    if (model.price_known === false) return "Price unavailable"
+    var rate = Number(model[key] || 0)
+    if (rate === 0) return "Free"
+    if (rate < 1) return "Under $1 / M"
+    if (rate < 5) return "$1–5 / M"
+    if (rate < 20) return "$5–20 / M"
+    return "$20+ / M"
+  }
+  function catalogGroupLabel(model) {
+    switch (catalogGroupBy.currentIndex) {
+    case 1: return root.modelPublisher(model)
+    case 2: return root.catalogPriceBand(model, "input_rate")
+    case 3: return root.catalogPriceBand(model, "output_rate")
+    case 4: return root.catalogContextBand(model)
+    case 5:
+      if ((model.outputs || []).indexOf("image") >= 0) return "Image generation"
+      if ((model.inputs || []).indexOf("image") >= 0) return "Vision / image input"
+      if ((model.inputs || []).indexOf("audio") >= 0 || (model.outputs || []).indexOf("audio") >= 0) return "Audio"
+      if ((model.inputs || []).indexOf("video") >= 0) return "Video"
+      return "Text / other"
+    default: return model.category || "Other"
+    }
+  }
+  function catalogGroupRank(label) {
+    var order = []
+    if (catalogGroupBy.currentIndex === 2 || catalogGroupBy.currentIndex === 3) order = ["Free", "Under $1 / M", "$1–5 / M", "$5–20 / M", "$20+ / M", "Price unavailable"]
+    else if (catalogGroupBy.currentIndex === 4) order = ["Under 32K", "32K–128K", "128K–512K", "512K–1M", "1M+", "Unknown context"]
+    else if (catalogGroupBy.currentIndex === 5) order = ["Text / other", "Vision / image input", "Image generation", "Audio", "Video"]
+    var rank = order.indexOf(label)
+    return rank < 0 ? 1000 : rank
+  }
+  function resetCatalogFilters() {
+    modelSearch.text = ""
+    catalogPublisherFilter.currentIndex = 0
+    modelUseFilter.currentIndex = 0
+    catalogModalityFilter.currentIndex = 0
+    catalogPriceFilter.currentIndex = 0
+    catalogContextFilter.currentIndex = 0
+    catalogCapabilityFilter.currentIndex = 0
+    catalogGroupBy.currentIndex = 0
+    catalogSort.currentIndex = 0
+  }
   property var catalogItems: {
-    var items = root.modelCatalog.slice(0)
-    var q = modelSearch.text.trim().toLowerCase()
+    var items = root.modelCatalog.map(function(model, index) {
+      var item = {}
+      for (var key in model) item[key] = model[key]
+      item.catalog_section = root.catalogGroupLabel(model)
+      item.catalog_order = index
+      return item
+    })
+    var q = modelSearch.text.trim().toLowerCase().split(/\s+/).filter(function(token) { return token.length > 0 })
     var category = modelUseFilter.currentText
-    if (q.length) items = items.filter(function(m) { return (m.name + " " + m.id + " " + m.description).toLowerCase().indexOf(q) >= 0 })
+    if (q.length) items = items.filter(function(m) {
+      var searchable = [m.name, m.id, m.description, m.category, root.modelPublisher(m), (m.inputs || []).join(" "), (m.outputs || []).join(" "), (m.supported_parameters || []).join(" ")].join(" ").toLowerCase()
+      return q.every(function(token) { return searchable.indexOf(token) >= 0 })
+    })
     if (category === "Favorites") items = items.filter(function(m) { return root.favoriteModels.indexOf(m.id) >= 0 })
     else if (category !== "All uses") items = items.filter(function(m) { return m.category === category })
+    if (catalogPublisherFilter.currentIndex > 0) items = items.filter(function(m) { return root.modelPublisher(m) === catalogPublisherFilter.currentText })
+    var modality = catalogModalityFilter.currentIndex
+    if (modality) items = items.filter(function(m) {
+      var input = m.inputs || [], output = m.outputs || []
+      if (modality === 1) return input.indexOf("text") >= 0
+      if (modality === 2) return input.indexOf("image") >= 0
+      if (modality === 3) return input.indexOf("audio") >= 0
+      if (modality === 4) return input.indexOf("video") >= 0
+      if (modality === 5) return output.indexOf("image") >= 0
+      if (modality === 6) return output.indexOf("audio") >= 0
+      return output.indexOf("embeddings") >= 0
+    })
+    var price = catalogPriceFilter.currentIndex
+    if (price) items = items.filter(function(m) {
+      if (m.price_known === false) return false
+      var n = Number(m.input_rate || 0)
+      if (price === 1) return n === 0 && Number(m.output_rate || 0) === 0
+      if (price === 2) return n > 0 && n < 1
+      if (price === 3) return n >= 1 && n < 5
+      if (price === 4) return n >= 5 && n < 20
+      return n >= 20
+    })
+    var context = catalogContextFilter.currentIndex
+    if (context) items = items.filter(function(m) { return Number(m.context_length || 0) >= [0, 64000, 128000, 256000, 1000000][context] })
+    var capability = catalogCapabilityFilter.currentIndex
+    if (capability) items = items.filter(function(m) {
+      var params = m.supported_parameters || []
+      if (capability === 1) return params.indexOf("tools") >= 0 || params.indexOf("tool_choice") >= 0
+      if (capability === 2) return params.indexOf("reasoning") >= 0 || params.indexOf("reasoning_effort") >= 0
+      return params.indexOf("structured_outputs") >= 0 || params.indexOf("json_schema") >= 0
+    })
     var sort = catalogSort.currentIndex
-    if (sort === 0) {
-      items.sort(function(a, b) { return a.category.localeCompare(b.category) || a.name.localeCompare(b.name) })
-    } else if (sort !== 6) {
-      var keys = ["", "input_rate", "output_rate", "average_rate", "input_rate", "output_rate"]
-      var key = keys[sort]
-      items.sort(function(a, b) {
-        var av = key === "average_rate" ? (a.input_rate + a.output_rate) / 2 : a[key]
-        var bv = key === "average_rate" ? (b.input_rate + b.output_rate) / 2 : b[key]
-        if (av === undefined || av === null) av = 0
-        if (bv === undefined || bv === null) bv = 0
-        return (sort === 4 || sort === 5) ? bv - av : av - bv
-      })
-    }
+    items.sort(function(a, b) {
+      var groupOrder = catalogGroupBy.currentIndex >= 2 ? root.catalogGroupRank(a.catalog_section) - root.catalogGroupRank(b.catalog_section) : a.catalog_section.localeCompare(b.catalog_section)
+      if (groupOrder) return groupOrder
+      if (sort === 0) return a.catalog_order - b.catalog_order
+      if (sort === 1) return a.name.localeCompare(b.name)
+      if (sort === 2) return Number(b.created || 0) - Number(a.created || 0)
+      if (sort === 6) return Number(b.context_length || 0) - Number(a.context_length || 0)
+      var key = sort === 3 || sort === 7 ? "input_rate" : sort === 4 || sort === 8 ? "output_rate" : "average_rate"
+      var av = key === "average_rate" ? (Number(a.input_rate || 0) + Number(a.output_rate || 0)) / 2 : Number(a[key] || 0)
+      var bv = key === "average_rate" ? (Number(b.input_rate || 0) + Number(b.output_rate || 0)) / 2 : Number(b[key] || 0)
+      if (a.price_known === false && b.price_known !== false) return 1
+      if (a.price_known !== false && b.price_known === false) return -1
+      var descending = sort === 7 || sort === 8
+      return (descending ? bv - av : av - bv) || a.name.localeCompare(b.name)
+    })
     return items
   }
   readonly property color bg: darkMode ? "#111a27" : "#ece9d8"
@@ -134,6 +238,47 @@ ShellRoot {
       if (!root.modelCatalog.length) root.notice = "OpenRouter returned no models"
     })
   }
+  function loadModelProviders() {
+    request("GET", "/api/providers", null, function(data) {
+      root.modelProviders = data.providers || []
+      var provider = root.currentProfile().provider || "auto"
+      providerInput.currentIndex = root.providerIndex(provider)
+    })
+  }
+  function providerIndex(id) {
+    for (var i = 0; i < root.modelProviders.length; ++i) if (root.modelProviders[i].id === id) return i
+    return root.modelProviders.length ? root.providerIndexFallback(id) : -1
+  }
+  function providerIndexFallback(id) {
+    for (var i = 0; i < root.modelProviders.length; ++i) if (root.modelProviders[i].id === "custom") return i
+    return 0
+  }
+  function providerCredentialEnv() {
+    var id = providerInput.currentValue || "auto"
+    if (id === "custom") return "CUSTOM_API_KEY"
+    var entry = root.modelProviders.filter(function(p) { return p.id === id })[0]
+    if (!entry) return ""
+    var candidates = (entry.env_vars || []).filter(function(name) { return /(_API_KEY|_TOKEN)$/.test(name) || name === "GH_TOKEN" || name === "GITHUB_TOKEN" })
+    var configured = root.currentProfile().configured_api_keys || []
+    for (var i = 0; i < candidates.length; ++i) if (configured.indexOf(candidates[i]) >= 0) return candidates[i]
+    var preferred = candidates.filter(function(name) { return name.endsWith("_API_KEY") })
+    return preferred.length ? preferred[0] : (candidates[0] || "")
+  }
+  function providerCredentialConfigured() {
+    var name = root.providerCredentialEnv()
+    if (!name) return false
+    if (providerInput.currentValue === "custom") return !!root.currentProfile().custom_api_key_configured
+    return (root.currentProfile().configured_api_keys || []).indexOf(name) >= 0
+  }
+  function providerDescription() {
+    var id = providerInput.currentValue || "auto"
+    var entry = root.modelProviders.filter(function(p) { return p.id === id })[0]
+    if (id === "custom") return "Custom or local OpenAI-compatible endpoint"
+    if (id === "auto") return "Let Hermes choose the configured route"
+    var keyOptions = entry ? (entry.env_vars || []).filter(function(name) { return /(_API_KEY|_TOKEN)$/.test(name) || name === "GH_TOKEN" || name === "GITHUB_TOKEN" }) : []
+    var description = entry && entry.description ? entry.description : (entry ? entry.label : id)
+    return keyOptions.length ? description : description + " · Hermes sign-in: hermes model"
+  }
   function formatRate(value) {
     var n = Number(value || 0)
     if (n > 0 && n < 0.01) return "$" + n.toFixed(4)
@@ -161,7 +306,8 @@ ShellRoot {
   function newTaskAssigneeNames() { return root.assignableProfiles().filter(function(p) { return root.newAllowedProfiles.indexOf(p.slug) >= 0 }).map(function(p) { return p.slug }) }
   function activeProjects() { return root.projects.filter(function(p) { return !p.archived }) }
   function saveProfile() {
-    var payload = {slug: root.selectedProfile, model: modelInput.text, provider: providerInput.text,
+    var payload = {slug: root.selectedProfile, model: modelInput.text, provider: providerInput.currentValue,
+      base_url: baseUrlInput.text,
       reasoning: reasoningInput.text, personality: soulInput.text}
     if (root.advancedMode) {
       try { payload.advanced = JSON.parse(advancedInput.text) }
@@ -170,20 +316,20 @@ ShellRoot {
     request("POST", "/api/profile/save", payload, function() { root.notice = "Profile settings saved"; root.refresh() })
   }
   function keyEnvName() {
-    var options = ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "XAI_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "MINIMAX_API_KEY", "CUSTOM"]
-    return options[keyProvider.currentIndex] === "CUSTOM" ? customKeyName.text.trim().toUpperCase() : options[keyProvider.currentIndex]
+    return root.providerCredentialEnv()
   }
   function saveProfileKey() {
     var name = keyEnvName()
-    if (!/^[A-Z][A-Z0-9_]{0,63}_API_KEY$/.test(name)) { root.notice = "Use an environment key name ending in _API_KEY"; return }
+    if (!name) { root.notice = "This provider uses Hermes-managed authentication"; return }
     if (!profileKeyInput.text) { root.notice = "Paste a key first"; return }
-    request("POST", "/api/profile/key", {slug: root.selectedProfile, key_name: name, key: profileKeyInput.text}, function() {
+    request("POST", "/api/profile/key", {slug: root.selectedProfile, provider: providerInput.currentValue, key_name: name, key: profileKeyInput.text}, function() {
       profileKeyInput.text = ""; root.notice = name + " saved for " + root.selectedProfile; root.refresh()
     })
   }
   function clearProfileKey() {
     var name = keyEnvName()
-    request("POST", "/api/profile/key", {slug: root.selectedProfile, key_name: name, clear: true}, function() {
+    if (!name) return
+    request("POST", "/api/profile/key", {slug: root.selectedProfile, provider: providerInput.currentValue, key_name: name, clear: true}, function() {
       profileKeyInput.text = ""; root.notice = name + " cleared"; root.refresh()
     })
   }
@@ -423,12 +569,13 @@ ShellRoot {
   Shortcut { sequence: "Ctrl+5"; onActivated: root.page = "Prompts" }
   Shortcut { sequence: "Escape"; enabled: root.showModels || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor; onActivated: root.closeTopDialog() }
   Timer { interval: 10000; running: root.pendingRequests === 0; repeat: true; onTriggered: root.refresh() }
-  Component.onCompleted: root.refresh()
+  Component.onCompleted: { root.refresh(); root.loadModelProviders() }
   onSelectedProfileChanged: {
     var p = root.profileBySlug(root.selectedProfile)
-    if (p.slug && root.page === "Profiles") {
+    if (p.slug) {
       modelInput.text = p.model || ""
-      providerInput.text = p.provider || ""
+      providerInput.currentIndex = root.providerIndex(p.provider || "auto")
+      baseUrlInput.text = p.base_url || ""
       reasoningInput.text = p.reasoning || "medium"
       soulInput.text = p.personality || ""
       profileKeyInput.text = ""
@@ -734,8 +881,8 @@ ShellRoot {
                     Column { width: parent.width * 0.53; spacing: 6
                       Text { text: "DEFAULT MODEL"; color: root.muted; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.7 }
                       Row { width: parent.width; spacing: 7
-                        TextField { leftPadding: 9; rightPadding: 9; id: modelInput; width: parent.width - 91; height: 38; text: parent.parent.parent.parent.current.model || ""; color: root.text; font.pixelSize: 11; placeholderText: "provider/model-name"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-                        Rectangle { width: 84; height: 38; radius: 2; color: root.accent; border.color: root.border
+                        TextField { leftPadding: 9; rightPadding: 9; id: modelInput; width: parent.width - (providerInput.currentValue === "openrouter" ? 91 : 0); height: 38; text: parent.parent.parent.parent.current.model || ""; color: root.text; font.pixelSize: 11; placeholderText: providerInput.currentValue === "openrouter" ? "provider/model-name" : "Model ID for selected provider"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                        Rectangle { visible: providerInput.currentValue === "openrouter"; width: visible ? 84 : 0; height: 38; radius: 2; color: root.accent; border.color: root.border
                           Text { anchors.centerIn: parent; text: "Browse models"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
                           MouseArea { anchors.fill: parent; onClicked: { root.showModels = true; if (!root.modelCatalog.length) root.loadModelCatalog(false) } }
                         }
@@ -743,22 +890,24 @@ ShellRoot {
                     }
                     Column { width: parent.width * 0.27; spacing: 6
                       Text { text: "PROVIDER"; color: root.muted; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.7 }
-                      TextField { leftPadding: 9; rightPadding: 9; id: providerInput; width: parent.width; height: 38; text: parent.parent.parent.current.provider || ""; color: root.text; font.pixelSize: 11; placeholderText: "auto"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                      ComboBox { id: providerInput; width: parent.width; height: 38; model: root.modelProviders; textRole: "label"; valueRole: "id"; currentIndex: root.providerIndex(parent.parent.parent.current.provider || "auto"); contentItem: Text { text: providerInput.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                     }
                     Column { width: parent.width * 0.20 - 24; spacing: 6
                       Text { text: "REASONING"; color: root.muted; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.7 }
                       TextField { leftPadding: 9; rightPadding: 9; id: reasoningInput; width: parent.width; height: 38; text: parent.parent.parent.current.reasoning || "medium"; color: root.text; font.pixelSize: 11; placeholderText: "low / medium / high"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                     }
                   }
+                  Row { width: parent.width; height: providerInput.currentValue === "custom" ? 38 : 0; visible: providerInput.currentValue === "custom"; spacing: 10
+                    Text { text: "CUSTOM / LOCAL BASE URL"; color: root.muted; font.pixelSize: 8; font.bold: true; width: 150; anchors.verticalCenter: parent.verticalCenter }
+                    TextField { leftPadding: 9; rightPadding: 9; id: baseUrlInput; width: parent.width - 160; height: 34; placeholderText: "http://localhost:11434/v1"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                  }
                   Column { width: parent.width; spacing: 7
                     Row { width: parent.width; height: 30; spacing: 10
-                      Text { text: "PROFILE API CREDENTIAL"; color: root.muted; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.7; anchors.verticalCenter: parent.verticalCenter }
-                      ComboBox { id: keyProvider; width: 190; height: 30; model: ["OpenRouter", "OpenAI", "Anthropic", "Google AI Studio", "Google Gemini", "DeepSeek", "xAI", "Mistral", "Groq", "MiniMax", "Custom…"]; contentItem: Text { text: keyProvider.displayText; color: root.text; font.pixelSize: 9; verticalAlignment: Text.AlignVCenter; leftPadding: 8 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-                      Text { text: (root.currentProfile().configured_api_keys || []).indexOf(root.keyEnvName()) >= 0 ? "Saved privately for this profile" : "No key saved for this provider"; color: (root.currentProfile().configured_api_keys || []).indexOf(root.keyEnvName()) >= 0 ? root.accent : root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
+                      Text { id: credentialName; width: 210; text: root.keyEnvName() ? (providerInput.currentValue === "custom" ? "CUSTOM ENDPOINT KEY" : root.keyEnvName()) : "HERMES SIGN-IN"; color: root.muted; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.5; elide: Text.ElideRight; anchors.verticalCenter: parent.verticalCenter }
+                      Text { width: parent.width - credentialName.width - 10; text: root.keyEnvName() ? (root.providerCredentialConfigured() ? "Saved privately for this profile" : "No key saved for this provider") : root.providerDescription(); color: root.providerCredentialConfigured() ? root.accent : root.muted; font.pixelSize: 8; elide: Text.ElideRight; anchors.verticalCenter: parent.verticalCenter }
                     }
-                    Row { width: parent.width; height: 38; spacing: 8
-                      TextField { leftPadding: 9; rightPadding: 9; id: customKeyName; visible: keyProvider.currentIndex === 10; width: visible ? 160 : 0; height: 36; text: "CUSTOM_API_KEY"; color: root.text; font.pixelSize: 9; placeholderText: "CUSTOM_API_KEY"; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-                      TextField { leftPadding: 9; rightPadding: 9; id: profileKeyInput; width: parent.width - (keyProvider.currentIndex === 10 ? 435 : 275); height: 36; echoMode: TextInput.Password; color: root.text; font.pixelSize: 10; placeholderText: "Paste or replace this profile’s API key"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                    Row { width: parent.width; height: root.keyEnvName() ? 38 : 0; visible: !!root.keyEnvName(); spacing: 8
+                      TextField { leftPadding: 9; rightPadding: 9; id: profileKeyInput; width: parent.width - 176; height: 36; echoMode: TextInput.Password; color: root.text; font.pixelSize: 10; placeholderText: providerInput.currentValue === "custom" ? "Stored privately with this profile’s model config" : "Paste or replace this profile’s provider key"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                       Rectangle { width: 84; height: 34; radius: 2; color: root.accent; anchors.verticalCenter: parent.verticalCenter
                         Text { anchors.centerIn: parent; text: "Save key"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
                         MouseArea { anchors.fill: parent; onClicked: root.saveProfileKey() }
@@ -768,6 +917,7 @@ ShellRoot {
                         MouseArea { anchors.fill: parent; onClicked: root.clearProfileKey() }
                       }
                     }
+                    Text { visible: !root.keyEnvName(); width: parent.width; height: 28; text: providerInput.currentValue === "auto" ? "Hermes will use an authenticated provider from your local credential pool." : "Use Hermes authentication for this backend. Run `hermes model` in a terminal to connect it."; color: root.muted; font.pixelSize: 8; wrapMode: Text.WordWrap }
                   }
                   Item { width: parent.width; height: 18
                     Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: "PERSONALITY & SYSTEM VOICE"; color: root.muted; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.8 }
@@ -1234,12 +1384,24 @@ ShellRoot {
               }
               Item { width: 24; height: 20 }
             }
-            Row { width: parent.width; height: 40; spacing: 9
-              TextField { leftPadding: 9; rightPadding: 9; id: modelSearch; width: 355; height: 38; color: root.text; font.pixelSize: 10; placeholderText: "Search model names, providers, capabilities…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              ComboBox { id: modelUseFilter; width: 200; height: 38; model: ["All uses", "Favorites", "Text & chat", "Coding", "Vision", "Image generation", "Audio", "Video", "Embeddings", "Reranking", "Decision", "Files & documents", "Other"]; contentItem: Text { text: modelUseFilter.displayText; color: root.text; font.pixelSize: 10; verticalAlignment: Text.AlignVCenter; leftPadding: 10 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              ComboBox { id: catalogSort; width: 220; height: 38; model: ["Group by use", "Input cost · low to high", "Output cost · low to high", "Average cost · low to high", "Input cost · high to low", "Output cost · high to low", "OpenRouter order"]; contentItem: Text { text: catalogSort.displayText; color: root.text; font.pixelSize: 10; verticalAlignment: Text.AlignVCenter; leftPadding: 10 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              Item { width: Math.max(0, parent.width - 355 - 200 - 220 - 36 - catalogCount.implicitWidth); height: 1 }
-              Text { id: catalogCount; text: root.catalogItems.length + " shown"; color: root.muted; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
+            Row { width: parent.width; height: 38; spacing: 9
+              TextField { leftPadding: 10; rightPadding: 10; id: modelSearch; width: 410; height: 36; color: root.text; font.pixelSize: 10; placeholderText: "Search name, creator, use, modality, capability…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: catalogPublisherFilter; width: 190; height: 36; model: root.catalogPublishers; contentItem: Text { text: catalogPublisherFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: modelUseFilter; width: 155; height: 36; model: ["All uses", "Favorites", "Text & chat", "Coding", "Vision", "Image generation", "Audio", "Video", "Embeddings", "Reranking", "Decision", "Files & documents", "Other"]; contentItem: Text { text: modelUseFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              Item { width: Math.max(0, parent.width - 410 - 190 - 155 - 27 - catalogCount.implicitWidth); height: 1 }
+              Text { id: catalogCount; text: root.catalogItems.length + " / " + root.modelCatalog.length + " shown"; color: root.muted; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
+            }
+            Row { width: parent.width; height: 36; spacing: 8
+              ComboBox { id: catalogGroupBy; width: 150; height: 34; model: ["Group: use", "Group: creator", "Group: input cost", "Group: output cost", "Group: context", "Group: modality"]; contentItem: Text { text: catalogGroupBy.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: catalogSort; width: 210; height: 34; model: ["OpenRouter order", "Name · A to Z", "Newest first", "Input · low to high", "Output · low to high", "Average cost · low to high", "Context · high to low", "Input · high to low", "Output · high to low"]; contentItem: Text { text: catalogSort.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: catalogModalityFilter; width: 150; height: 34; model: ["Any modality", "Text input", "Image input", "Audio input", "Video input", "Image output", "Audio output", "Embeddings"]; contentItem: Text { text: catalogModalityFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: catalogPriceFilter; width: 135; height: 34; model: ["Any input price", "Free", "Under $1 / M", "$1–5 / M", "$5–20 / M", "$20+ / M"]; contentItem: Text { text: catalogPriceFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: catalogContextFilter; width: 125; height: 34; model: ["Any context", "64K+", "128K+", "256K+", "1M+"]; contentItem: Text { text: catalogContextFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: catalogCapabilityFilter; width: 140; height: 34; model: ["Any capability", "Tool calling", "Reasoning", "Structured output"]; contentItem: Text { text: catalogCapabilityFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              Rectangle { width: 80; height: 34; radius: 2; color: root.raised; border.color: root.border
+                Text { anchors.centerIn: parent; text: "Reset filters"; color: root.accent; font.pixelSize: 8; font.bold: true }
+                MouseArea { anchors.fill: parent; onClicked: root.resetCatalogFilters() }
+              }
             }
             Row { width: parent.width; height: 28; spacing: 8
               Text { text: "MODEL"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 1; width: parent.width * 0.55; leftPadding: 12; anchors.verticalCenter: parent.verticalCenter }
@@ -1249,19 +1411,19 @@ ShellRoot {
               Item { width: 28; height: 1 }
               Item { width: 75; height: 1 }
             }
-            ListView { id: catalogList; width: parent.width; height: parent.height - 205; clip: true; spacing: 6; model: root.catalogItems; section.property: "category"; section.criteria: ViewSection.FullString
+            ListView { id: catalogList; width: parent.width; height: parent.height - 254; clip: true; spacing: 6; model: root.catalogItems; section.property: "catalog_section"; section.criteria: ViewSection.FullString
               section.delegate: Rectangle { width: catalogList.width; height: 25; color: "transparent"; Text { anchors.left: parent.left; anchors.leftMargin: 12; anchors.verticalCenter: parent.verticalCenter; text: section; color: root.accent; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.7 } }
               ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
               delegate: Rectangle { required property var modelData; width: catalogList.width; height: 74; radius: 2; color: modelHover.containsMouse ? root.hoverFill : root.surface; border.color: modelHover.containsMouse ? root.border : root.border
-                MouseArea { id: modelHover; anchors.fill: parent; hoverEnabled: true; onClicked: { modelInput.text = modelData.id; providerInput.text = "openrouter"; root.showModels = false; root.notice = "Selected " + modelData.id + " · save profile to apply" } }
+                MouseArea { id: modelHover; anchors.fill: parent; hoverEnabled: true; onClicked: { modelInput.text = modelData.id; providerInput.currentIndex = root.providerIndex("openrouter"); baseUrlInput.text = ""; root.showModels = false; root.notice = "Selected " + modelData.id + " · save profile to apply" } }
                 Row { anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 8
                   Column { width: parent.width * 0.55 - 8; anchors.verticalCenter: parent.verticalCenter; spacing: 5
                     Text { text: modelData.name; color: root.text; font.pixelSize: 10; font.bold: true; elide: Text.ElideRight; width: parent.width }
-                    Text { text: modelData.id + "   ·   " + modelData.category + (modelData.inputs.length ? "   ·   " + modelData.inputs.join(" + ") + " → " + modelData.outputs.join(" + ") : ""); color: root.muted; font.pixelSize: 8; elide: Text.ElideRight; width: parent.width }
+                  Text { text: modelData.id + "   ·   " + modelData.category + (modelData.inputs.length ? "   ·   " + modelData.inputs.join(" + ") + " → " + modelData.outputs.join(" + ") : "") + ((modelData.supported_parameters || []).indexOf("tools") >= 0 ? "   ·   tools" : "") + (modelData.max_completion_tokens ? "   ·   max " + Math.round(modelData.max_completion_tokens / 1000) + "K out" : ""); color: root.muted; font.pixelSize: 8; elide: Text.ElideRight; width: parent.width }
                   }
-                  Text { text: root.formatRate(modelData.input_rate); color: root.text; font.pixelSize: 10; width: 118; anchors.verticalCenter: parent.verticalCenter }
+                  Text { text: modelData.price_known === false ? "n/a" : root.formatRate(modelData.input_rate); color: root.text; font.pixelSize: 10; width: 118; anchors.verticalCenter: parent.verticalCenter }
                   Column { width: 128; anchors.verticalCenter: parent.verticalCenter; spacing: 3
-                    Text { text: root.formatRate(modelData.output_rate); color: root.text; font.pixelSize: 10 }
+                    Text { text: modelData.price_known === false ? "n/a" : root.formatRate(modelData.output_rate); color: root.text; font.pixelSize: 10 }
                     Text { visible: root.modelExtraPricing(modelData).length > 0; text: root.modelExtraPricing(modelData); color: root.muted; font.pixelSize: 8 }
                   }
                   Text { text: modelData.context_length ? (modelData.context_length >= 1000000 ? (modelData.context_length / 1000000).toFixed(1) + "M" : Math.round(modelData.context_length / 1000) + "K") : "—"; color: root.muted; font.pixelSize: 9; width: 70; anchors.verticalCenter: parent.verticalCenter }
@@ -1271,7 +1433,7 @@ ShellRoot {
                   }
                   Rectangle { width: 75; height: 30; radius: 2; color: root.accent; anchors.verticalCenter: parent.verticalCenter
                     Text { anchors.centerIn: parent; text: "Use model"; color: "#ffffff"; font.pixelSize: 8; font.bold: true }
-                    MouseArea { anchors.fill: parent; onClicked: { modelInput.text = modelData.id; providerInput.text = "openrouter"; root.showModels = false; root.notice = "Selected " + modelData.id + " · save profile to apply" } }
+                    MouseArea { anchors.fill: parent; onClicked: { modelInput.text = modelData.id; providerInput.currentIndex = root.providerIndex("openrouter"); baseUrlInput.text = ""; root.showModels = false; root.notice = "Selected " + modelData.id + " · save profile to apply" } }
                   }
                 }
               }

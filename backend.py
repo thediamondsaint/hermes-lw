@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import copy
+import ast
 import json
 import math
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import threading
 import time
@@ -15,6 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date
+from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -51,6 +54,93 @@ def profile_paths(slug: str) -> tuple[Path, Path]:
 
 def profile_env_path(slug: str) -> Path:
     return (HERMES if slug == "default" else PROFILES / slug) / ".env"
+
+
+@lru_cache(maxsize=1)
+def installed_model_providers() -> list[dict]:
+    """Read Hermes' installed provider registry for the profile editor."""
+    fallback = [
+        {"id": "auto", "label": "Automatic", "env_vars": [], "description": "Use Hermes provider routing"},
+        {"id": "openrouter", "label": "OpenRouter", "env_vars": ["OPENROUTER_API_KEY"], "description": "Model aggregator"},
+        {"id": "anthropic", "label": "Anthropic", "env_vars": ["ANTHROPIC_API_KEY"], "description": "Claude API"},
+        {"id": "deepseek", "label": "DeepSeek", "env_vars": ["DEEPSEEK_API_KEY"], "description": "DeepSeek API"},
+        {"id": "gemini", "label": "Google Gemini", "env_vars": ["GOOGLE_API_KEY", "GEMINI_API_KEY"], "description": "Gemini API"},
+        {"id": "custom", "label": "Custom / Local endpoint", "env_vars": [], "description": "OpenAI-compatible endpoint, including local servers"},
+    ]
+    executable = shutil.which("hermes")
+    if not executable:
+        return fallback
+    binary = Path(executable).resolve()
+    roots = [binary.parent.parent]
+    provider_dirs = []
+    for root in roots:
+        for site in root.glob("lib/python*/site-packages"):
+            candidate = site / "plugins/model-providers"
+            if candidate.is_dir(): provider_dirs.append(candidate)
+    found = {}
+    for folder in provider_dirs:
+        for source in folder.glob("*/__init__.py"):
+            try:
+                tree = ast.parse(source.read_text())
+            except (OSError, SyntaxError):
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call): continue
+                values = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+                try:
+                    provider_id = ast.literal_eval(values.get("name"))
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(provider_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", provider_id): continue
+                def literal_list(key):
+                    try:
+                        value = ast.literal_eval(values.get(key))
+                        return [str(item) for item in value] if isinstance(value, (tuple, list)) else []
+                    except (ValueError, TypeError):
+                        return []
+                def literal_text(key, default=""):
+                    try:
+                        value = ast.literal_eval(values.get(key))
+                        return value if isinstance(value, str) else default
+                    except (ValueError, TypeError):
+                        return default
+                description = literal_text("description")
+                label = literal_text("display_name") or description or provider_id.replace("-", " ").title()
+                env_vars = [name for name in literal_list("env_vars")
+                            if re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", name)]
+                found[provider_id] = {"id": provider_id, "label": label, "env_vars": env_vars,
+                                      "description": description,
+                                      "aliases": literal_list("aliases")}
+    if not found: return fallback
+    found["auto"] = fallback[0]
+    return sorted(found.values(), key=lambda item: (item["id"] != "auto", item["label"].lower()))
+
+
+def credential_env_names(path: Path) -> list[str]:
+    if not path.exists(): return []
+    found = set()
+    for line in path.read_text().splitlines():
+        match = re.match(r"^\s*(?:export\s+)?([A-Z][A-Z0-9_]{0,63})\s*=\s*\S+", line)
+        if match:
+            name = match.group(1)
+            if name.endswith(("_API_KEY", "_TOKEN")) or name in {"GH_TOKEN", "GITHUB_TOKEN"}:
+                found.add(name)
+    return sorted(found)
+
+
+def credential_env_candidates(provider: str) -> list[str]:
+    entry = next((p for p in installed_model_providers() if p["id"] == provider), None)
+    if not entry: return []
+    return [name for name in entry["env_vars"]
+            if name.endswith(("_API_KEY", "_TOKEN")) or name in {"GH_TOKEN", "GITHUB_TOKEN"}]
+
+
+def write_profile_config(config_path: Path, cfg: dict) -> None:
+    temp = config_path.with_suffix(".yaml.tmp")
+    temp.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
+    os.chmod(temp, 0o600)
+    temp.replace(config_path)
+    os.chmod(config_path, 0o600)
 
 
 def app_settings() -> dict:
@@ -97,17 +187,6 @@ def has_env_key(path: Path, key_name: str = "OPENROUTER_API_KEY") -> bool:
                for line in path.read_text().splitlines())
 
 
-def configured_api_keys(path: Path) -> list[str]:
-    if not path.exists():
-        return []
-    found = set()
-    for line in path.read_text().splitlines():
-        match = re.match(r"^\s*(?:export\s+)?([A-Z][A-Z0-9_]{0,63}_API_KEY)\s*=\s*\S+", line)
-        if match:
-            found.add(match.group(1))
-    return sorted(found)
-
-
 def read_profiles() -> list[dict]:
     settings = app_settings()
     active = "default"
@@ -130,6 +209,8 @@ def read_profiles() -> list[dict]:
             "slug": slug,
             "model": str(model.get("default", "not set")),
             "provider": str(model.get("provider", "auto")),
+            "base_url": str(model.get("base_url", "")),
+            "custom_api_key_configured": bool(model.get("api_key")),
             "reasoning": str(agent.get("reasoning_effort", "medium")),
             "description": str(cfg.get("description", "")),
             "personality": soul.read_text() if soul.exists() else "",
@@ -137,7 +218,7 @@ def read_profiles() -> list[dict]:
             "manager": slug == settings["manager_profile"],
             "paused": slug in settings["paused_profiles"],
             "openrouter_key_configured": has_env_key(profile_env_path(slug)),
-            "configured_api_keys": configured_api_keys(profile_env_path(slug)),
+            "configured_api_keys": credential_env_names(profile_env_path(slug)),
         })
     return result
 
@@ -217,6 +298,7 @@ def normalized_model(model: dict) -> dict:
     except (TypeError, ValueError):
         image_rate = 0.0
     arch = model.get("architecture") or {}
+    top_provider = model.get("top_provider") or {}
     return {
         "id": str(model.get("id", "")),
         "name": str(model.get("name") or model.get("id", "")),
@@ -226,9 +308,12 @@ def normalized_model(model: dict) -> dict:
         "output_rate": output_rate,
         "image_rate": image_rate,
         "request_rate": _float(pricing.get("request")),
+        "price_known": pricing.get("prompt") is not None or pricing.get("completion") is not None,
         "inputs": arch.get("input_modalities") or [],
         "outputs": arch.get("output_modalities") or [],
+        "supported_parameters": model.get("supported_parameters") or [],
         "context_length": int(model.get("context_length") or 0),
+        "max_completion_tokens": int(top_provider.get("max_completion_tokens") or 0),
         "created": int(model.get("created") or 0),
     }
 
@@ -406,6 +491,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path.startswith("/api/state"):
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 self.send_json(dashboard(str(query.get("board", [""])[0])))
+            elif self.path == "/api/providers":
+                self.send_json({"providers": installed_model_providers()})
             elif self.path.startswith("/api/models"):
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 self.send_json(load_model_catalog(force=query.get("refresh") == ["1"]))
@@ -415,7 +502,8 @@ class Handler(BaseHTTPRequestHandler):
                 cfg = yaml.safe_load(config_path.read_text()) or {}
                 self.send_json({"profile": slug, "config": strip_secrets(cfg),
                                 "openrouter_key_configured": has_env_key(profile_env_path(slug)),
-                                "configured_api_keys": configured_api_keys(profile_env_path(slug))})
+                                "configured_api_keys": credential_env_names(profile_env_path(slug)),
+                                "custom_api_key_configured": bool((cfg.get("model") or {}).get("api_key"))})
             else:
                 self.send_json({"error": "not found"}, 404)
         except Exception as exc:
@@ -430,12 +518,31 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/profile/key":
                 slug = safe_slug(str(payload.get("slug", "")))
                 key_name = str(payload.get("key_name", "OPENROUTER_API_KEY")).strip().upper()
-                if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}_API_KEY", key_name):
-                    raise ValueError("Key name must be a valid environment variable ending in _API_KEY")
-                env_path = profile_env_path(slug)
-                update_env_key(env_path, key_name, None if payload.get("clear") else str(payload.get("key", "")))
-                self.send_json({"ok": True, "configured": has_env_key(env_path, key_name),
-                                "configured_api_keys": configured_api_keys(env_path)})
+                provider = str(payload.get("provider", "openrouter")).strip().lower()
+                value = str(payload.get("key", ""))
+                if "\n" in value or "\r" in value:
+                    raise ValueError("API keys cannot contain line breaks")
+                config_path, _ = profile_paths(slug)
+                if provider == "custom":
+                    cfg = yaml.safe_load(config_path.read_text()) or {}
+                    model = cfg.setdefault("model", {})
+                    if payload.get("clear"):
+                        model.pop("api_key", None)
+                    elif value:
+                        model["api_key"] = value
+                    else:
+                        raise ValueError("Paste a key first")
+                    write_profile_config(config_path, cfg)
+                    configured = bool(model.get("api_key"))
+                else:
+                    allowed = credential_env_candidates(provider)
+                    if key_name not in allowed:
+                        raise ValueError(f"{provider} does not use {key_name}; choose a supported API-key provider")
+                    env_path = profile_env_path(slug)
+                    update_env_key(env_path, key_name, None if payload.get("clear") else value)
+                    configured = key_name in credential_env_names(env_path)
+                self.send_json({"ok": True, "configured": configured,
+                                "configured_api_keys": credential_env_names(profile_env_path(slug))})
             elif self.path == "/api/task/create":
                 title = str(payload.get("title", "")).strip()
                 if not title:
@@ -547,15 +654,28 @@ class Handler(BaseHTTPRequestHandler):
         if isinstance(p.get("advanced"), dict):
             cfg = deep_merge(cfg, p["advanced"])
         model = cfg.setdefault("model", {})
+        provider = str(p.get("provider", model.get("provider", "auto"))).strip().lower()
+        providers = {entry["id"] for entry in installed_model_providers()}
+        if provider not in providers:
+            raise ValueError("Choose a provider supported by the installed Hermes version")
+        base_url = str(p.get("base_url", "")).strip()
+        if base_url and not re.match(r"^https?://", base_url, re.I):
+            raise ValueError("Provider URL must start with http:// or https://")
         model["default"] = str(p.get("model", model.get("default", ""))).strip()
-        model["provider"] = str(p.get("provider", model.get("provider", "auto"))).strip()
+        model["provider"] = provider
+        if provider == "custom":
+            if base_url: model["base_url"] = base_url
+            else: model.pop("base_url", None)
+        else:
+            # A custom endpoint must never leak into requests sent to a normal provider.
+            model.pop("base_url", None)
         agent = cfg.setdefault("agent", {})
         agent["reasoning_effort"] = str(p.get("reasoning", agent.get("reasoning_effort", "medium")))
         backup = config_path.with_name("config.yaml.hermes-control-backup")
-        if not backup.exists(): backup.write_text(config_path.read_text())
-        temp = config_path.with_suffix(".yaml.tmp")
-        temp.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
-        temp.replace(config_path)
+        if not backup.exists():
+            backup.write_text(config_path.read_text())
+            os.chmod(backup, 0o600)
+        write_profile_config(config_path, cfg)
         soul_path.write_text(str(p.get("personality", "")))
         self.send_json({"ok": True})
 
