@@ -50,6 +50,9 @@ ShellRoot {
   property bool catalogAllCollapsed: false
   property var catalogCollapsedGroups: []
   property var catalogExpandedGroups: []
+  property int catalogVisibleLimit: 100
+  property int samplePromptTokens: 2000
+  property int sampleCompletionTokens: 500
   property var catalogPublishers: {
     var found = {}
     for (var i = 0; i < root.modelCatalog.length; ++i) found[root.modelPublisher(root.modelCatalog[i])] = true
@@ -124,8 +127,15 @@ ShellRoot {
     root.catalogCollapsedGroups = []
     root.catalogExpandedGroups = []
   }
+  function estimatedModelCost(model) {
+    if (model.price_known === false) return null
+    return (Number(model.input_rate || 0) * root.samplePromptTokens + Number(model.output_rate || 0) * root.sampleCompletionTokens) / 1000000
+  }
+  function modalOpen() {
+    return root.showModels || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor
+  }
   property var catalogDisplayItems: {
-    var rows = [], items = root.catalogItems, index = 0
+    var rows = [], items = root.catalogItems.slice(0, root.catalogVisibleLimit), index = 0
     while (index < items.length) {
       var section = items[index].catalog_section
       if (root.catalogGroupIsCollapsed(section)) {
@@ -148,6 +158,7 @@ ShellRoot {
     catalogCapabilityFilter.currentIndex = 0
     catalogGroupBy.currentIndex = 0
     catalogSort.currentIndex = 0
+    root.catalogVisibleLimit = 100
     root.expandAllCatalogGroups()
   }
   property var catalogItems: {
@@ -231,7 +242,7 @@ ShellRoot {
   readonly property color laneFill: darkMode ? "#172333" : "#f4f3ed"
   readonly property color hoverFill: darkMode ? "#25384d" : "#e8f0fb"
 
-  function request(method, path, payload, callback) {
+  function request(method, path, payload, callback, onFailure) {
     var xhr = new XMLHttpRequest()
     xhr.open(method, "http://127.0.0.1:18731" + path)
     xhr.timeout = 20000
@@ -245,11 +256,11 @@ ShellRoot {
         var value = {}
         try { value = JSON.parse(xhr.responseText) } catch (e) { value = {error: "Invalid response from Hermes LW"} }
         if (xhr.status >= 200 && xhr.status < 300) { root.backendConnected = true; callback(value) }
-        else { root.backendConnected = xhr.status !== 0; root.notice = value.error || "Request failed" }
+        else { root.backendConnected = xhr.status !== 0; root.notice = value.error || "Request failed"; if (onFailure) onFailure(value) }
       }
     }
-    xhr.onerror = function() { finish(); root.backendConnected = false; root.notice = "Hermes LW backend is unreachable" }
-    xhr.ontimeout = function() { finish(); root.notice = "Hermes request timed out" }
+    xhr.onerror = function() { finish(); root.backendConnected = false; root.notice = "Hermes LW backend is unreachable"; if (onFailure) onFailure({error: root.notice}) }
+    xhr.ontimeout = function() { finish(); root.notice = "Hermes request timed out"; if (onFailure) onFailure({error: root.notice}) }
     xhr.send(payload ? JSON.stringify(payload) : "{}")
   }
   function refresh(boardSlug) {
@@ -276,9 +287,10 @@ ShellRoot {
       root.modelCatalogSource = data.source || "cache"
       root.modelCatalogStale = !!data.stale
       root.modelCatalogFetchedAt = Number(data.fetched_at || 0)
+      root.catalogVisibleLimit = 100
       root.modelCatalogLoading = false
       if (!root.modelCatalog.length) root.notice = "OpenRouter returned no models"
-    })
+    }, function() { root.modelCatalogLoading = false })
   }
   function loadModelProviders() {
     request("GET", "/api/providers", null, function(data) {
@@ -440,7 +452,7 @@ ShellRoot {
   }
   function openProject(slug) {
     request("POST", "/api/project/select", {slug: slug}, function() {
-      root.currentBoard = slug; root.page = "Kanban"; root.statusFilterValue = "all"; root.assigneeFilterValue = "all"; root.selectedTaskIds = []; root.refresh(slug)
+      root.currentBoard = slug; root.page = "Kanban"; root.statusFilterValue = "all"; root.assigneeFilterValue = "all"; root.selectedTaskIds = []; root.selectedTask = null; root.refresh(slug)
     })
   }
   function editProject(project) {
@@ -604,6 +616,7 @@ ShellRoot {
   Shortcut { sequence: "Ctrl+N"; onActivated: root.prepareNewTask() }
   Shortcut { sequence: "Ctrl+Shift+N"; onActivated: { root.showCreateProfile = true; newProfileSlug.text = ""; newProfileRole.text = ""; generatedSoul.text = ""; newProfileKey.text = "" } }
   Shortcut { sequence: "Ctrl+R"; onActivated: root.refresh() }
+  Shortcut { sequence: "Ctrl+F"; onActivated: { if (root.showModels) { modelSearch.forceActiveFocus(); modelSearch.selectAll() } else { root.page = "Kanban"; taskSearchInput.forceActiveFocus(); taskSearchInput.selectAll() } } }
   Shortcut { sequence: "Ctrl+1"; onActivated: root.page = "Overview" }
   Shortcut { sequence: "Ctrl+2"; onActivated: root.page = "Projects" }
   Shortcut { sequence: "Ctrl+3"; onActivated: root.page = "Profiles" }
@@ -611,7 +624,7 @@ ShellRoot {
   Shortcut { sequence: "Ctrl+5"; onActivated: root.page = "Prompts" }
   Shortcut { sequence: "Ctrl+6"; onActivated: root.page = "Models & Providers" }
   Shortcut { sequence: "Escape"; enabled: root.showModels || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor; onActivated: root.closeTopDialog() }
-  Timer { interval: 10000; running: root.pendingRequests === 0; repeat: true; onTriggered: root.refresh() }
+  Timer { interval: 10000; running: root.pendingRequests === 0 && !root.modalOpen(); repeat: true; onTriggered: root.refresh() }
   Component.onCompleted: { root.refresh(); root.loadModelProviders() }
   onSelectedProfileChanged: {
     var p = root.profileBySlug(root.selectedProfile)
@@ -1053,7 +1066,12 @@ ShellRoot {
                         Flickable { width: parent.width; height: parent.height - 36; contentHeight: laneCards.implicitHeight; clip: true; boundsBehavior: Flickable.StopAtBounds
                           Column { id: laneCards; width: parent.width; spacing: 6
                             Repeater { model: root.laneTasks(lane.modelData.statuses)
-                              delegate: Rectangle { id: taskCard; required property var modelData; width: laneCards.width; height: 127; color: cardHover.containsMouse ? root.hoverFill : root.surface; border.color: root.selectedTaskIds.indexOf(modelData.id) >= 0 ? root.accent : root.border
+                              delegate: Rectangle { id: taskCard; required property var modelData; width: laneCards.width; height: 127; focus: true; activeFocusOnTab: true; color: cardHover.containsMouse || activeFocus ? root.hoverFill : root.surface; border.color: activeFocus || root.selectedTaskIds.indexOf(modelData.id) >= 0 ? root.accent : root.border
+                              Accessible.role: Accessible.ListItem
+                              Accessible.name: modelData.title + ", " + modelData.status + (modelData.assignee ? ", assigned to " + modelData.assignee : ", unassigned")
+                              Keys.onReturnPressed: root.selectTask(modelData)
+                              Keys.onEnterPressed: root.selectTask(modelData)
+                              Keys.onSpacePressed: root.toggleTaskSelection(modelData.id)
                               MouseArea { id: cardHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.LeftButton; onClicked: root.selectTask(taskCard.modelData) }
                                 Column { anchors.fill: parent; anchors.margins: 8; spacing: 4
                                   Row { width: parent.width; height: 18; spacing: 6
@@ -1428,7 +1446,7 @@ ShellRoot {
               Item { width: 24; height: 20 }
             }
             Row { width: parent.width; height: 38; spacing: 9
-              TextField { leftPadding: 10; rightPadding: 10; id: modelSearch; width: 410; height: 36; color: root.text; font.pixelSize: 10; placeholderText: "Search name, creator, use, modality, capability…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              TextField { leftPadding: 10; rightPadding: 10; id: modelSearch; width: 410; height: 36; color: root.text; font.pixelSize: 10; placeholderText: "Search name, creator, use, modality, capability…"; placeholderTextColor: root.muted; onTextChanged: root.catalogVisibleLimit = 100; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               ComboBox { id: catalogPublisherFilter; width: 190; height: 36; model: root.catalogPublishers; contentItem: Text { text: catalogPublisherFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               ComboBox { id: modelUseFilter; width: 155; height: 36; model: ["All uses", "Favorites", "Text & chat", "Coding", "Vision", "Image generation", "Audio", "Video", "Embeddings", "Reranking", "Decision", "Files & documents", "Other"]; contentItem: Text { text: modelUseFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               Rectangle { width: 80; height: 32; radius: 2; color: root.raised; border.color: root.border; anchors.verticalCenter: parent.verticalCenter
@@ -1449,6 +1467,8 @@ ShellRoot {
               ComboBox { id: catalogPriceFilter; width: 135; height: 34; model: ["Any input price", "Free", "Under $1 / M", "$1–5 / M", "$5–20 / M", "$20+ / M"]; contentItem: Text { text: catalogPriceFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               ComboBox { id: catalogContextFilter; width: 125; height: 34; model: ["Any context", "64K+", "128K+", "256K+", "1M+"]; contentItem: Text { text: catalogContextFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               ComboBox { id: catalogCapabilityFilter; width: 140; height: 34; model: ["Any capability", "Tool calling", "Reasoning", "Structured output"]; contentItem: Text { text: catalogCapabilityFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              TextField { id: samplePromptInput; width: 92; height: 34; text: String(root.samplePromptTokens); placeholderText: "Input tokens"; color: root.text; font.pixelSize: 9; inputMethodHints: Qt.ImhDigitsOnly; onTextChanged: root.samplePromptTokens = Math.max(0, Math.min(10000000, parseInt(text) || 0)); background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              TextField { id: sampleCompletionInput; width: 92; height: 34; text: String(root.sampleCompletionTokens); placeholderText: "Output tokens"; color: root.text; font.pixelSize: 9; inputMethodHints: Qt.ImhDigitsOnly; onTextChanged: root.sampleCompletionTokens = Math.max(0, Math.min(10000000, parseInt(text) || 0)); background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               Rectangle { width: 80; height: 34; radius: 2; color: root.raised; border.color: root.border
                 Text { anchors.centerIn: parent; text: "Reset filters"; color: root.accent; font.pixelSize: 8; font.bold: true }
                 MouseArea { anchors.fill: parent; onClicked: root.resetCatalogFilters() }
@@ -1462,7 +1482,7 @@ ShellRoot {
               Item { width: 28; height: 1 }
               Item { width: 75; height: 1 }
             }
-            ListView { id: catalogList; width: parent.width; height: parent.height - 254; clip: true; spacing: 6; model: root.catalogDisplayItems; section.property: "catalog_section"; section.criteria: ViewSection.FullString
+            ListView { id: catalogList; width: parent.width; height: parent.height - 294; clip: true; spacing: 6; model: root.catalogDisplayItems; section.property: "catalog_section"; section.criteria: ViewSection.FullString
               section.delegate: Rectangle { width: catalogList.width; height: 25; radius: 2; color: root.raised
                 Text { anchors.left: parent.left; anchors.leftMargin: 12; anchors.verticalCenter: parent.verticalCenter; text: (root.catalogGroupIsCollapsed(section) ? "▸  " : "▾  ") + section + "   ·   " + root.catalogItems.filter(function(item) { return item.catalog_section === section }).length; color: root.accent; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.4 }
                 MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleCatalogGroup(section) }
@@ -1479,6 +1499,7 @@ ShellRoot {
                   Column { width: 128; anchors.verticalCenter: parent.verticalCenter; spacing: 3
                     Text { text: modelData.price_known === false ? "n/a" : root.formatRate(modelData.output_rate); color: root.text; font.pixelSize: 10 }
                     Text { visible: root.modelExtraPricing(modelData).length > 0; text: root.modelExtraPricing(modelData); color: root.muted; font.pixelSize: 8 }
+                    Text { text: root.estimatedModelCost(modelData) === null ? "Sample: n/a" : "Sample: $" + root.estimatedModelCost(modelData).toFixed(4); color: root.accent; font.pixelSize: 8 }
                   }
                   Text { text: modelData.context_length ? (modelData.context_length >= 1000000 ? (modelData.context_length / 1000000).toFixed(1) + "M" : Math.round(modelData.context_length / 1000) + "K") : "—"; color: root.muted; font.pixelSize: 9; width: 70; anchors.verticalCenter: parent.verticalCenter }
                   Rectangle { width: 28; height: 28; radius: 2; color: root.raised; anchors.verticalCenter: parent.verticalCenter
@@ -1492,8 +1513,12 @@ ShellRoot {
                 }
               }
             }
+            Rectangle { visible: root.catalogItems.length > root.catalogVisibleLimit; width: parent.width; height: 30; radius: 2; color: root.raised; border.color: root.border
+              Text { anchors.centerIn: parent; text: "Show next 100 models · " + (root.catalogItems.length - root.catalogVisibleLimit) + " remaining"; color: root.accent; font.pixelSize: 9; font.bold: true }
+              MouseArea { anchors.fill: parent; onClicked: root.catalogVisibleLimit += 100 }
+            }
             Text { visible: !root.modelCatalogLoading && root.catalogItems.length === 0; text: root.modelCatalog.length ? "No models match those filters." : "OpenRouter’s catalog is unavailable. Check your connection and refresh."; color: root.muted; font.pixelSize: 10; anchors.horizontalCenter: parent.horizontalCenter }
-            Text { text: "Rates are OpenRouter’s published list prices; input/output are per million tokens. Actual image and request pricing can vary by model."; color: "#667783"; font.pixelSize: 8; wrapMode: Text.WordWrap; width: parent.width }
+            Text { text: "Sample estimate uses " + root.samplePromptTokens + " input + " + root.sampleCompletionTokens + " output tokens. Published OpenRouter list prices are per million tokens; image/request charges may differ."; color: "#667783"; font.pixelSize: 8; wrapMode: Text.WordWrap; width: parent.width }
           }
         }
       }

@@ -32,6 +32,26 @@ MODEL_CACHE = HOME / ".cache/hermes-control/openrouter-models.json"
 PORT = 18731
 LOCK = threading.Lock()
 MODEL_CACHE_SECONDS = 6 * 60 * 60
+MAX_REQUEST_BYTES = 1_048_576
+
+
+def atomic_write(path: Path, content: str, mode: int = 0o600) -> None:
+    """Replace app state atomically so a crash cannot leave half a JSON/YAML file."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp.replace(path)
+        os.chmod(path, mode)
+    finally:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def cmd(*args: str, timeout: int = 12) -> str:
@@ -136,11 +156,7 @@ def credential_env_candidates(provider: str) -> list[str]:
 
 
 def write_profile_config(config_path: Path, cfg: dict) -> None:
-    temp = config_path.with_suffix(".yaml.tmp")
-    temp.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
-    os.chmod(temp, 0o600)
-    temp.replace(config_path)
-    os.chmod(config_path, 0o600)
+    atomic_write(config_path, yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
 
 
 def app_settings() -> dict:
@@ -161,23 +177,19 @@ def app_settings() -> dict:
 
 
 def save_app_settings(data: dict) -> None:
-    APP_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
-    tmp = APP_SETTINGS.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    os.chmod(tmp, 0o600)
-    tmp.replace(APP_SETTINGS)
+    atomic_write(APP_SETTINGS, json.dumps(data, indent=2, ensure_ascii=False))
 
 
 def update_env_key(path: Path, key_name: str, value: str | None) -> None:
     if "\n" in (value or "") or "\r" in (value or ""):
         raise ValueError("API keys cannot contain line breaks")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if len(value or "") > 8192:
+        raise ValueError("API keys must be 8,192 characters or fewer")
     lines = path.read_text().splitlines() if path.exists() else []
     lines = [line for line in lines if not re.match(rf"^\s*(?:export\s+)?{re.escape(key_name)}\s*=", line)]
     if value:
         lines.append(f"{key_name}={value}")
-    path.write_text("\n".join(lines) + ("\n" if lines else ""))
-    os.chmod(path, 0o600)
+    atomic_write(path, "\n".join(lines) + ("\n" if lines else ""))
 
 
 def has_env_key(path: Path, key_name: str = "OPENROUTER_API_KEY") -> bool:
@@ -231,10 +243,7 @@ def read_estimates() -> dict:
 
 
 def save_estimates(data: dict) -> None:
-    ESTIMATES.parent.mkdir(parents=True, exist_ok=True)
-    tmp = ESTIMATES.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    tmp.replace(ESTIMATES)
+    atomic_write(ESTIMATES, json.dumps(data, indent=2, ensure_ascii=False))
 
 
 def iso_date(value) -> str:
@@ -285,18 +294,10 @@ def model_category(model: dict) -> str:
 
 def normalized_model(model: dict) -> dict:
     pricing = model.get("pricing") or {}
-    try:
-        input_rate = float(pricing.get("prompt") or 0) * 1_000_000
-    except (TypeError, ValueError):
-        input_rate = 0.0
-    try:
-        output_rate = float(pricing.get("completion") or 0) * 1_000_000
-    except (TypeError, ValueError):
-        output_rate = 0.0
-    try:
-        image_rate = float(pricing.get("image") or 0)
-    except (TypeError, ValueError):
-        image_rate = 0.0
+    if not isinstance(pricing, dict): pricing = {}
+    input_rate = _float(pricing.get("prompt")) * 1_000_000
+    output_rate = _float(pricing.get("completion")) * 1_000_000
+    image_rate = _float(pricing.get("image"))
     arch = model.get("architecture") or {}
     top_provider = model.get("top_provider") or {}
     return {
@@ -320,7 +321,8 @@ def normalized_model(model: dict) -> dict:
 
 def _float(value) -> float:
     try:
-        return float(value or 0)
+        result = float(value or 0)
+        return result if math.isfinite(result) and result >= 0 else 0.0
     except (TypeError, ValueError):
         return 0.0
 
@@ -341,12 +343,20 @@ def load_model_catalog(force: bool = False) -> dict:
     try:
         with urllib.request.urlopen(req, timeout=25) as response:
             payload = json.loads(response.read())
-        models = [normalized_model(item) for item in payload.get("data", []) if item.get("id")]
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise ValueError("OpenRouter returned an unexpected model catalog")
+        models = []
+        for item in payload["data"]:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            try:
+                models.append(normalized_model(item))
+            except (ValueError, TypeError, OverflowError, AttributeError):
+                continue
+        if not models:
+            raise ValueError("OpenRouter returned an empty model catalog")
         data = {"fetched_at": int(time.time()), "models": models}
-        MODEL_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = MODEL_CACHE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data))
-        tmp.replace(MODEL_CACHE)
+        atomic_write(MODEL_CACHE, json.dumps(data, ensure_ascii=False))
         return {"models": models, "fetched_at": data["fetched_at"], "source": "live", "stale": False}
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
         if cache.get("models"):
@@ -358,8 +368,8 @@ def read_projects(settings: dict | None = None) -> list[dict]:
     settings = settings or app_settings()
     try:
         projects = json.loads(cmd("kanban", "boards", "list", "--json", "--all"))
-    except Exception:
-        projects = [{"slug": "default", "name": "Default", "description": "", "total": 0, "counts": {}}]
+    except Exception as exc:
+        raise RuntimeError(f"Could not read Hermes projects: {exc}") from exc
     if not isinstance(projects, list):
         projects = []
     meta = settings.get("project_meta", {})
@@ -388,8 +398,8 @@ def dashboard(board: str = "") -> dict:
         board = "default"
     try:
         tasks = json.loads(cmd("kanban", "--board", board, "list", "--json", "--sort", "priority-desc"))
-    except Exception:
-        tasks = []
+    except Exception as exc:
+        raise RuntimeError(f"Could not read tasks for project {board}: {exc}") from exc
     if isinstance(tasks, dict):
         tasks = tasks.get("tasks", [])
     estimates = read_estimates()
@@ -465,9 +475,12 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def send_json(self, data, status=200):
-        body = json.dumps(data).encode()
+        body = json.dumps(data, ensure_ascii=False, allow_nan=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Length", str(len(body)))
         origin = self.headers.get("Origin")
         local_opaque_origin = origin == "null" and self.headers.get("Sec-Fetch-Site", "").lower() != "cross-site"
         if local_opaque_origin or origin in ("file://", f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"):
@@ -479,7 +492,21 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def read_body(self):
-        return json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
+        raw_length = self.headers.get("Content-Length", "0")
+        if not raw_length.isdigit():
+            raise ValueError("Invalid request length")
+        length = int(raw_length)
+        if length > MAX_REQUEST_BYTES:
+            raise ValueError("Request is too large (maximum 1 MiB)")
+        if length == 0:
+            return {}
+        try:
+            payload = json.loads(self.rfile.read(length))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ValueError("Request body must be valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Request body must be a JSON object")
+        return payload
 
     def do_OPTIONS(self):
         if not self.request_is_local(): return
@@ -488,16 +515,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.request_is_local(): return
         try:
-            if self.path.startswith("/api/state"):
-                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            route = urllib.parse.urlparse(self.path)
+            if route.path == "/api/state":
+                query = urllib.parse.parse_qs(route.query)
                 self.send_json(dashboard(str(query.get("board", [""])[0])))
             elif self.path == "/api/providers":
                 self.send_json({"providers": installed_model_providers()})
-            elif self.path.startswith("/api/models"):
-                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            elif route.path == "/api/models":
+                query = urllib.parse.parse_qs(route.query)
                 self.send_json(load_model_catalog(force=query.get("refresh") == ["1"]))
-            elif self.path.startswith("/api/profile/"):
-                slug = safe_slug(self.path.split("/")[-1])
+            elif route.path.startswith("/api/profile/"):
+                slug = safe_slug(route.path.removeprefix("/api/profile/"))
                 config_path, soul_path = profile_paths(slug)
                 cfg = yaml.safe_load(config_path.read_text()) or {}
                 self.send_json({"profile": slug, "config": strip_secrets(cfg),
@@ -506,6 +534,8 @@ class Handler(BaseHTTPRequestHandler):
                                 "custom_api_key_configured": bool((cfg.get("model") or {}).get("api_key"))})
             else:
                 self.send_json({"error": "not found"}, 404)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, 400)
         except Exception as exc:
             self.send_json({"error": str(exc)}, 500)
 
@@ -522,6 +552,8 @@ class Handler(BaseHTTPRequestHandler):
                 value = str(payload.get("key", ""))
                 if "\n" in value or "\r" in value:
                     raise ValueError("API keys cannot contain line breaks")
+                if len(value) > 8192:
+                    raise ValueError("API keys must be 8,192 characters or fewer")
                 config_path, _ = profile_paths(slug)
                 if provider == "custom":
                     cfg = yaml.safe_load(config_path.read_text()) or {}
@@ -547,6 +579,10 @@ class Handler(BaseHTTPRequestHandler):
                 title = str(payload.get("title", "")).strip()
                 if not title:
                     raise ValueError("Add a task title first")
+                if len(title) > 200:
+                    raise ValueError("Task titles must be 200 characters or fewer")
+                if len(str(payload.get("body", ""))) > 20000:
+                    raise ValueError("Task descriptions must be 20,000 characters or fewer")
                 payload["due_date"] = iso_date(payload.get("due_date", ""))
                 if "cost" in payload:
                     payload["cost"] = nonnegative_number(payload.get("cost", 0), "Cost estimate")
@@ -554,7 +590,10 @@ class Handler(BaseHTTPRequestHandler):
                 allowed = payload.get("allowed_profiles", [])
                 if not isinstance(allowed, list): raise ValueError("Allowed profiles must be a list")
                 known_profiles = set(profile_slugs())
-                payload["allowed_profiles"] = sorted({str(slug) for slug in allowed if str(slug) in known_profiles})
+                unknown_profiles = {str(slug) for slug in allowed if str(slug) not in known_profiles}
+                if unknown_profiles:
+                    raise ValueError("Choose profiles that still exist")
+                payload["allowed_profiles"] = sorted({str(slug) for slug in allowed})
                 assignee = str(payload.get("assignee", ""))
                 if assignee and assignee not in payload["allowed_profiles"]:
                     raise ValueError("The assigned profile must be included in the allowed profile list")
@@ -564,7 +603,9 @@ class Handler(BaseHTTPRequestHandler):
                 args = ["kanban", "--board", board, "create", title, "--json"]
                 for key, flag in (("body", "--body"), ("assignee", "--assignee"), ("workspace", "--workspace")):
                     if payload.get(key): args += [flag, str(payload[key])]
-                args += ["--priority", str(int(payload.get("priority", 0)))]
+                priority = int(payload.get("priority", 0))
+                if not 0 <= priority <= 4: raise ValueError("Priority must be between 0 and 4")
+                args += ["--priority", str(priority)]
                 if payload.get("parent"): args += ["--parent", str(payload["parent"])]
                 result = cmd(*args)
                 created = json.loads(result) if result.startswith(("{", "[")) else {}
@@ -644,8 +685,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "message": f"Hermes started{(' with ' + manager) if manager else ''}"})
             else:
                 self.send_json({"error": "not found"}, 404)
-        except Exception as exc:
+        except ValueError as exc:
             self.send_json({"error": str(exc)}, 400)
+        except Exception as exc:
+            self.send_json({"error": str(exc)}, 500)
 
     def save_profile(self, p):
         slug = safe_slug(str(p.get("slug", "")))
@@ -661,6 +704,14 @@ class Handler(BaseHTTPRequestHandler):
         base_url = str(p.get("base_url", "")).strip()
         if base_url and not re.match(r"^https?://", base_url, re.I):
             raise ValueError("Provider URL must start with http:// or https://")
+        if len(base_url) > 2048 or any(char in base_url for char in "\r\n"):
+            raise ValueError("Provider URL is too long or contains invalid characters")
+        if base_url:
+            parsed_url = urllib.parse.urlsplit(base_url)
+            if not parsed_url.hostname or parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment:
+                raise ValueError("Provider URL must have a host and cannot contain credentials, query parameters, or a fragment")
+        if len(str(p.get("personality", ""))) > 50000:
+            raise ValueError("Profile personality must be 50,000 characters or fewer")
         model["default"] = str(p.get("model", model.get("default", ""))).strip()
         model["provider"] = provider
         if provider == "custom":
@@ -673,10 +724,9 @@ class Handler(BaseHTTPRequestHandler):
         agent["reasoning_effort"] = str(p.get("reasoning", agent.get("reasoning_effort", "medium")))
         backup = config_path.with_name("config.yaml.hermes-control-backup")
         if not backup.exists():
-            backup.write_text(config_path.read_text())
-            os.chmod(backup, 0o600)
+            atomic_write(backup, config_path.read_text())
         write_profile_config(config_path, cfg)
-        soul_path.write_text(str(p.get("personality", "")))
+        atomic_write(soul_path, str(p.get("personality", "")))
         self.send_json({"ok": True})
 
     def create_profile(self, p):
@@ -691,6 +741,8 @@ class Handler(BaseHTTPRequestHandler):
         api_key = str(p.get("openrouter_api_key", ""))
         if "\n" in api_key or "\r" in api_key:
             raise ValueError("API keys cannot contain line breaks")
+        if len(api_key) > 8192: raise ValueError("API keys must be 8,192 characters or fewer")
+        if len(soul) > 50000: raise ValueError("Profile personality must be 50,000 characters or fewer")
         args = ["profile", "create", slug]
         if description:
             args += ["--description", description]
@@ -706,7 +758,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             raise ValueError("Choose an empty profile, a settings clone, or a full clone")
         if soul:
-            profile_paths(slug)[1].write_text(soul)
+            atomic_write(profile_paths(slug)[1], soul)
         if api_key:
             update_env_key(profile_env_path(slug), "OPENROUTER_API_KEY", api_key)
         self.send_json({"ok": True, "profile": slug})
@@ -806,12 +858,15 @@ class Handler(BaseHTTPRequestHandler):
         if "tags" in p:
             tags = p.get("tags", [])
             if isinstance(tags, str): tags = [tag.strip() for tag in tags.split(",")]
+            if not isinstance(tags, list): raise ValueError("Tags must be a list or comma-separated text")
             record["tags"] = sorted({str(tag).strip()[:32] for tag in tags if str(tag).strip()})[:12]
         if "allowed_profiles" in p:
             allowed = p.get("allowed_profiles")
             if not isinstance(allowed, list): raise ValueError("Allowed profiles must be a list")
             known = set(profile_slugs())
-            record["allowed_profiles"] = sorted({str(slug) for slug in allowed if str(slug) in known})
+            unknown = {str(slug) for slug in allowed if str(slug) not in known}
+            if unknown: raise ValueError("Choose profiles that still exist")
+            record["allowed_profiles"] = sorted({str(slug) for slug in allowed})
         estimates[key] = record
         if board == "default": estimates.pop(task_id, None)
         save_estimates(estimates)
@@ -822,6 +877,7 @@ class Handler(BaseHTTPRequestHandler):
         if slug in {project["slug"] for project in read_projects()}: raise ValueError("A project with that ID already exists")
         name = str(p.get("name", "")).strip() or slug.replace("-", " ").title()
         description = str(p.get("description", "")).strip()
+        if len(name) > 120 or len(description) > 5000: raise ValueError("Project name or description is too long")
         due_date = iso_date(p.get("due_date", ""))
         budget = nonnegative_number(p.get("budget", 0), "Project budget")
         args = ["kanban", "boards", "create", slug, "--name", name]
@@ -840,6 +896,7 @@ class Handler(BaseHTTPRequestHandler):
     def save_project(self, p):
         slug = safe_board(str(p.get("slug", "")))
         name = str(p.get("name", "")).strip()
+        if len(name) > 120 or len(str(p.get("description", ""))) > 5000: raise ValueError("Project name or description is too long")
         settings = app_settings()
         meta = settings["project_meta"].setdefault(slug, {})
         due_date = iso_date(p.get("due_date", ""))
@@ -872,7 +929,7 @@ class Handler(BaseHTTPRequestHandler):
         out_dir = HOME / "Downloads"
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"hermes-project-{slug}-{time.strftime('%Y%m%d-%H%M%S')}.json"
-        path.write_text(json.dumps({"project": state["project"], "tasks": state["tasks"]}, indent=2, ensure_ascii=False))
+        atomic_write(path, json.dumps({"project": state["project"], "tasks": state["tasks"]}, indent=2, ensure_ascii=False))
         self.send_json({"ok": True, "path": str(path)})
 
     def bulk_tasks(self, p):
@@ -974,6 +1031,7 @@ class Handler(BaseHTTPRequestHandler):
         board = safe_board(str(p.get("board", app_settings().get("active_board", "default"))))
         if not re.fullmatch(r"t_[a-zA-Z0-9_-]+", tid): raise ValueError("Invalid task ID")
         if not body: raise ValueError("Write a comment first")
+        if len(body) > 10000: raise ValueError("Comments must be 10,000 characters or fewer")
         author = str(p.get("author", "user")).strip()[:80] or "user"
         cmd("kanban", "--board", board, "comment", tid, body, "--author", author)
         self.task_detail({"id": tid, "board": board})

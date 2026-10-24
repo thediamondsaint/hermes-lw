@@ -30,6 +30,8 @@ Each task can limit work to selected profiles; the backend enforces that list fo
 
 The backend binds only to `127.0.0.1:18731` and rejects nonlocal hosts and cross-origin web requests. It needs Python 3 with PyYAML, Hermes Agent on `PATH`, and Quickshell. On Lua-configured Hyprland, the launcher applies a session-only rule to float, center, and size the desk for the current scaled monitor. It does not force a workspace or edit Hyprland config files.
 
+The latest 25-item audit, GitHub references, and implemented fixes are documented in [AUDIT.md](AUDIT.md).
+
 ## Screenshots
 
 These screenshots use fictional demo profiles, prompts, and tasks.
