@@ -958,6 +958,7 @@ ShellRoot {
   }
   function openCreateProfileDialog() {
     root.showCreateProfile = true
+    root.generatingPersonality = false
     newProfileSlug.text = ""; newProfileRole.text = ""; generatedSoul.text = ""; newProfileKey.text = ""
     cloneMode.currentIndex = 0; cloneSource.currentIndex = 0; copyApiKey.checked = false
     root.personalityGeneratorProfile = root.profiles.some(function(p) { return p.slug === root.selectedProfile }) ? root.selectedProfile : "default"
