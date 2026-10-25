@@ -164,7 +164,8 @@ QML_TESTS = '''
           compare(root.newProfileModel, "fixture/one")
           compare(root.personalityGenerationModel, "fixture/one")
           compare(modelInput.text, previous)
-          compare(cloneMode.currentIndex, 1)
+          compare(cloneMode.currentIndex, 2)
+          compare(copyApiKey.checked, true)
           compare(cloneSource.currentText, "default")
         }
         function test_generate_click_fills_personality() {

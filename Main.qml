@@ -1073,10 +1073,10 @@ ShellRoot {
     if (root.generatingPersonality || root.creatingProfile) { root.notice = "A profile action is already running. Wait for its result before starting another."; return }
     root.personalityGenerationStatus = ""
     newProfileSlug.text = ""; newProfileRole.text = ""; generatedSoul.text = ""; newProfileKey.text = ""
-    cloneMode.currentIndex = 1
+    cloneMode.currentIndex = 2
     var defaultIndex = root.profiles.map(function(p) { return p.slug }).indexOf("default")
     cloneSource.currentIndex = Math.max(0, defaultIndex)
-    copyApiKey.checked = false
+    copyApiKey.checked = true
     root.personalityGeneratorProfile = defaultIndex >= 0 ? "default" : (root.profiles.length ? root.profiles[0].slug : "default")
     var generatorInfo = root.profileBySlug(root.personalityGeneratorProfile)
     root.personalityGeneratorProvider = generatorInfo.provider || "auto"
@@ -2258,7 +2258,7 @@ ShellRoot {
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
             Column { id: createProfileForm; width: createProfileScroll.width - 12; spacing: 9
             Text { text: "New profile"; color: root.text; font.pixelSize: 18; font.bold: true }
-            Text { width: parent.width; text: "Name it, choose its model, then write or generate its personality. Starts as a copy of default."; color: root.muted; font.pixelSize: 11; wrapMode: Text.WordWrap }
+            Text { width: parent.width; text: "Name it, choose its model, then write or generate its personality. Copies default, including its provider API keys, unless you change the copy settings."; color: root.muted; font.pixelSize: 11; wrapMode: Text.WordWrap }
             Text { text: "Profile name"; color: root.text; font.pixelSize: 11; font.bold: true }
             TextField { id: newProfileSlug; width: parent.width; height: 38; enabled: !root.generatingPersonality && !root.creatingProfile; leftPadding: 10; rightPadding: 10; color: root.text; font.pixelSize: 12; placeholderText: "e.g. code-reviewer (letters, numbers, hyphens)"; placeholderTextColor: root.muted; background: Rectangle { color: root.inputFill; border.color: root.border } }
             Text { text: "What should it do?"; color: root.text; font.pixelSize: 11; font.bold: true }
@@ -2290,17 +2290,17 @@ ShellRoot {
             Button { width: parent.width; height: 34; text: (root.profileAdvanced ? "▾" : "▸") + " Copy settings & API keys"; onClicked: root.profileAdvanced = !root.profileAdvanced }
             Column { visible: root.profileAdvanced; width: parent.width; spacing: 8
               Text { text: "Starting point"; color: root.text; font.pixelSize: 11; font.bold: true }
-              ComboBox { id: cloneMode; width: parent.width; height: 36; enabled: !root.creatingProfile; model: ["Blank profile", "Copy settings, personality and skills (recommended)", "Copy everything, including workspace state"] }
+              ComboBox { id: cloneMode; width: parent.width; height: 36; enabled: !root.creatingProfile; model: ["Blank profile", "Copy settings, personality and skills", "Full copy, including workspace state (default)"] }
               Text { width: parent.width; text: "Source profile (also supplies credentials for generation)"; color: root.muted; font.pixelSize: 10; wrapMode: Text.WordWrap }
               ComboBox { id: cloneSource; width: parent.width; height: 36; enabled: !root.generatingPersonality && !root.creatingProfile; model: root.profiles.map(function(p){return p.slug}); onActivated: {
                   var source = root.profiles[currentIndex]
                   if (source) root.personalityGeneratorProfile = source.slug
                 } }
-              CheckBox { id: copyApiKey; text: "Copy API keys from the source profile"; checked: false; enabled: cloneMode.currentIndex > 0 }
-              Text { width: parent.width; text: "Keys are not copied unless you check this. Add the new profile’s provider key in Providers after creation, or enter an OpenRouter key here."; color: root.muted; font.pixelSize: 10; wrapMode: Text.WordWrap }
+              CheckBox { id: copyApiKey; text: "Copy API keys from the source profile"; checked: true; enabled: cloneMode.currentIndex > 0 }
+              Text { width: parent.width; text: "Provider keys are copied by default. Uncheck this for separate credentials, or enter a new OpenRouter key below."; color: root.muted; font.pixelSize: 10; wrapMode: Text.WordWrap }
               TextField { id: newProfileKey; width: parent.width; height: 36; echoMode: TextInput.Password; leftPadding: 10; rightPadding: 10; color: root.text; placeholderText: "New OpenRouter API key (optional)"; placeholderTextColor: root.muted; background: Rectangle { color: root.inputFill; border.color: root.border } }
             }
-            Text { width: parent.width; text: copyApiKey.checked ? "API keys will be copied from the source." : "No API keys copied. Configure its key in Providers after creation."; color: root.muted; font.pixelSize: 10; wrapMode: Text.WordWrap }
+            Text { width: parent.width; text: cloneMode.currentIndex > 0 && copyApiKey.checked ? "API keys will be copied from " + cloneSource.currentText + "." : "No API keys copied. Configure its key in Providers after creation."; color: root.muted; font.pixelSize: 10; wrapMode: Text.WordWrap }
             Row { width: parent.width; height: 36; spacing: 9
               Button { id: createProfileSubmit; width: 120; height: 36
                 text: root.creatingProfile ? "Creating…" : root.generatingPersonality ? "Please wait…" : "Create profile"

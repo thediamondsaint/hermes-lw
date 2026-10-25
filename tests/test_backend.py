@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 import urllib.request
 
 import yaml
@@ -126,10 +126,41 @@ class BackendTests(unittest.TestCase):
             self.assertEqual((home_override / ".env").read_text(), "OPENROUTER_API_KEY=fake-source-key\n")
             self.assertEqual((home_override / ".env").stat().st_mode & 0o777, 0o600)
             return subprocess.CompletedProcess(args, 0, "answer", "")
-        with patch.object(backend, "run_profile_hermes", side_effect=run):
+        with patch.object(backend, "check_generation_budget"), patch.object(backend, "run_profile_hermes", side_effect=run):
             backend.run_isolated_generation("default", ["chat"], "openrouter", "example/selected")
         self.assertFalse(generated_homes[0].exists())
         self.assertEqual((self.hermes / "config.yaml").read_text(), original)
+
+    def test_exhausted_openrouter_budget_blocks_inference(self):
+        (self.hermes / ".env").write_text("OPENROUTER_API_KEY=fake-test-only\n")
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"data":{"limit_remaining":0}}'
+        with patch.object(backend.urllib.request, "urlopen", return_value=response) as status, patch.object(backend, "run_profile_hermes") as run:
+            with self.assertRaisesRegex(ValueError, "spending limit"):
+                backend.run_isolated_generation("default", ["chat"], "openrouter", "example/model")
+        self.assertEqual(status.call_args.args[0].get_method(), "GET")
+        self.assertEqual(status.call_args.args[0].full_url, "https://openrouter.ai/api/v1/key")
+        run.assert_not_called()
+
+    def test_openrouter_preflight_does_not_use_inherited_keys(self):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "wrong-desktop-key"}), patch.object(backend.urllib.request, "urlopen") as request:
+            backend.check_generation_budget("default", "openrouter")
+        request.assert_not_called()
+
+    def test_openrouter_preflight_defers_to_separately_configured_pool(self):
+        (self.hermes / ".env").write_text("OPENROUTER_API_KEY=fake-test-only\n")
+        (self.hermes / "auth.json").write_text(json.dumps({"credential_pool": {"openrouter": [{"source": "manual"}]}}))
+        with patch.object(backend.urllib.request, "urlopen") as request:
+            backend.check_generation_budget("default", "openrouter")
+        request.assert_not_called()
+
+    def test_openrouter_budget_accepts_positive_and_unlimited_limits(self):
+        (self.hermes / ".env").write_text("OPENROUTER_API_KEY=fake-test-only\n")
+        for remaining in (10, None):
+            response = MagicMock()
+            response.__enter__.return_value.read.return_value = json.dumps({"data": {"limit_remaining": remaining}}).encode()
+            with patch.object(backend.urllib.request, "urlopen", return_value=response):
+                backend.check_generation_budget("default", "openrouter")
 
     def test_generation_rejects_automatic_provider_before_launch(self):
         with patch.object(backend, "run_profile_hermes") as run:
@@ -152,14 +183,32 @@ class BackendTests(unittest.TestCase):
                 self.handler.generate_profile_prompt({"name": "reviewer", "generator_profile": "default", "provider": "openrouter", "model": "example/selected"})
         self.assertNotIn("session_id", str(error.exception))
 
+    def test_scanner_warning_does_not_masquerade_as_generation_error(self):
+        result = subprocess.CompletedProcess([], 1, "Warning: Unknown toolsets: __hermes_lw_no_tools__\n⚠ tirith security scanner enabled but not available — command scanning will use pattern matching only", "session_id: example")
+        with patch.object(backend, "run_isolated_generation", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, "Hermes returned no answer") as error:
+                self.handler.generate_profile_prompt({"name": "reviewer", "provider": "openrouter", "model": "example/model"})
+        self.assertNotIn("tirith", str(error.exception))
+
     def test_create_persists_selected_model_and_provider(self):
         def create(*args, **kwargs):
             self.make_profile("reviewer")
         with patch.object(backend, "cmd", side_effect=create):
-            self.handler.create_profile({"slug": "reviewer", "clone_mode": "clone", "source": "default", "provider": "openrouter", "model": "example/chosen"})
+            self.handler.create_profile({"slug": "reviewer", "clone_mode": "clone", "copy_api_key": False, "source": "default", "provider": "openrouter", "model": "example/chosen"})
         config = yaml.safe_load((self.profiles / "reviewer" / "config.yaml").read_text())
         self.assertEqual(config["model"], {"provider": "openrouter", "default": "example/chosen"})
         self.assertEqual(self.responses[-1][1]["profile"], "reviewer")
+
+    def test_create_defaults_to_full_default_clone_with_keys(self):
+        with patch.object(backend, "cmd") as command, patch.object(backend, "clear_profile_credentials") as scrub:
+            self.handler.create_profile({"slug": "reviewer"})
+        command.assert_called_once_with("profile", "create", "reviewer", "--clone-from", "default", "--clone-all", timeout=90)
+        scrub.assert_not_called()
+
+    def test_create_can_explicitly_omit_cloned_keys(self):
+        with patch.object(backend, "cmd"), patch.object(backend, "clear_profile_credentials") as scrub:
+            self.handler.create_profile({"slug": "reviewer", "copy_api_key": False})
+        scrub.assert_called_once_with("reviewer")
 
     def test_invalid_profile_model_rejected_before_clone(self):
         with patch.object(backend, "cmd") as run:

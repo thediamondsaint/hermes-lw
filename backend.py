@@ -871,10 +871,57 @@ def run_profile_hermes(slug: str, args: list[str], timeout: int = 25, home_overr
                           capture_output=True, timeout=timeout, check=False)
 
 
+def check_generation_budget(source: str, provider: str) -> None:
+    """Check OpenRouter's read-only key budget before any inference request.
+
+    Keys in an OAuth/credential pool remain under Hermes' own resolver. Never
+    substitute a key inherited from the desktop environment for a profile key.
+    """
+    if provider != "openrouter":
+        return
+    key = ""
+    path = profile_env_path(source)
+    if has_env_key(path, "OPENROUTER_API_KEY"):
+        key = _profile_catalog_environment(source, provider).get("OPENROUTER_API_KEY", "")
+    if not key:
+        return
+    # A separately configured credential pool may choose another key. Leave
+    # those routes to Hermes rather than checking an unrelated .env key.
+    auth_path = profile_hermes_home(source) / "auth.json"
+    if auth_path.exists():
+        try:
+            pool = (json.loads(auth_path.read_text()).get("credential_pool") or {}).get("openrouter", [])
+            if not isinstance(pool, list) or any(not isinstance(entry, dict) or entry.get("source") != "env:OPENROUTER_API_KEY" for entry in pool):
+                return
+        except (OSError, ValueError, AttributeError):
+            return
+    request = urllib.request.Request("https://openrouter.ai/api/v1/key",
+                                     headers={"Authorization": "Bearer " + key, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise ValueError(f"OpenRouter rejected the API key from {source}. Set a valid key in Providers before generating.") from None
+        raise RuntimeError(f"Could not check the OpenRouter key budget (HTTP {exc.code}). No model request was sent.") from None
+    except (OSError, ValueError):
+        raise RuntimeError("Could not check the OpenRouter key budget. Check the connection and retry. No model request was sent.") from None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise RuntimeError("OpenRouter returned an invalid key status. No model request was sent.")
+    effective = data.get("effective_budget")
+    remaining = [data.get("limit_remaining")]
+    if isinstance(effective, dict):
+        remaining.append(effective.get("remaining_usd"))
+    if any(isinstance(value, (float, int)) and not isinstance(value, bool) and value <= 0 for value in remaining):
+        raise ValueError(f"The OpenRouter key from {source} has reached its spending limit. Change its limit in OpenRouter or select a different key in Providers. Cloned keys share this limit. No model request was sent.")
+
+
 def run_isolated_generation(source: str, args: list[str], provider: str, model: str):
     """Use the chosen route without source fallbacks, plugins, tools, or rules."""
     if provider == "auto":
         raise ValueError("Choose an explicit provider for generation instead of Automatic")
+    check_generation_budget(source, provider)
     config_path, _ = profile_paths(source)
     config = yaml.safe_load(config_path.read_text()) or {}
     source_model = config.get("model") if isinstance(config.get("model"), dict) else {}
@@ -1560,7 +1607,7 @@ class Handler(BaseHTTPRequestHandler):
                 if (len(base_url) > 2048 or any(c.isspace() for c in base_url) or url.scheme not in ("http", "https")
                         or not url.hostname or url.username or url.password or url.query or url.fragment):
                     raise ValueError("Provider URL must be an HTTP(S) endpoint without credentials or query parameters")
-        mode = str(p.get("clone_mode", "empty"))
+        mode = str(p.get("clone_mode", "clone_all"))
         description = str(p.get("description", "")).strip()
         soul = str(p.get("personality", ""))
         api_key = str(p.get("openrouter_api_key", ""))
@@ -1576,7 +1623,7 @@ class Handler(BaseHTTPRequestHandler):
             args += ["--clone-from", source]
             if mode == "clone_all": args.append("--clone-all")
             cmd(*args, timeout=90)
-            if not p.get("copy_api_key"):
+            if not p.get("copy_api_key", True):
                 clear_profile_credentials(slug)
         elif mode == "empty":
             cmd(*args, timeout=90)
@@ -1686,9 +1733,11 @@ Role and specialty requested by the user: {inferred_role}
             # Quiet Hermes puts session metadata on stderr, even when its real
             # provider error is on stdout. Do not hide that error behind a session ID.
             detail = "\n".join(line for line in (completed.stderr + "\n" + completed.stdout).splitlines()
-                               if not re.match(r"^\s*session_id:", line))
+                               if not re.match(r"^\s*session_id:", line)
+                               and not re.search(r"tirith security scanner enabled but not available", line, re.I)
+                               and "Unknown toolsets: __hermes_lw_no_tools__" not in line)
             detail = re.sub(r"\x1b\[[0-9;]*m", "", detail).strip()
-            raise RuntimeError("Could not generate the personality: " + (detail[-1200:] or "Hermes exited without an error message"))
+            raise RuntimeError("Could not generate the personality: " + (detail[-1200:] or f"Hermes returned no answer (exit {completed.returncode}). Check the selected model, provider credentials and account limits."))
         result = re.sub(r"\x1b\[[0-9;]*m", "", completed.stdout).strip()
         # Hermes startup warnings can appear on stdout despite -Q. Keep the
         # actual Markdown rather than saving toolset/scanner warnings as identity.
