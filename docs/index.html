@@ -209,7 +209,9 @@ systemctl --user status hermes-lw.service</code></pre>
           <article class="card"><h3>Group and narrow</h3><p>Group by use, publisher, input cost, output cost, context, or modality. Filter input and output prices separately; use Collapse all / Expand all when a group has many rows.</p></article>
           <article class="card"><h3>Compare estimates</h3><p>Set the sample input and output token counts. A model’s displayed sample estimate multiplies the published rates by those token counts. It is for comparison, not a quote or a task limit.</p></article>
           <article class="card"><h3>Apply a model</h3><p>Choose a model from the catalog. The profile editor still needs you to save the profile before the new setting becomes active.</p></article>
+          <article class="card"><h3>Ask AI</h3><p>Describe your task and choose the advisor model and credential profile. Hermes LW sends one text-only request and asks it to rank up to 30 models matching the catalog’s current search and filters. Recommendations are restricted to those catalog entries and include trade-offs.</p></article>
         </div>
+        <div class="notice warn">The advisor does not run until you press <b>Ask AI</b>. Its cost is a rough estimate based on catalog rates and a bounded prompt; provider billing may differ, so this is not a spend cap. If pricing is unavailable, check the provider’s rate card first.</div>
       </section>
 
       <section id="advisor">

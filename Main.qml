@@ -52,6 +52,30 @@ ShellRoot {
   property bool showPromptEditor: false
   property var editingPrompt: null
   property bool showModels: false
+  property bool showModelAdvisor: false
+  property string modelAdvisorQuestion: ""
+  property string modelAdvisorProfile: "default"
+  property string modelAdvisorModel: ""
+  property string modelAdvisorModelSearch: ""
+  property bool modelAdvisorLoading: false
+  property string modelAdvisorStatus: ""
+  property string modelAdvisorSummary: ""
+  property var modelAdvisorRecommendations: []
+  property var modelAdvisorModelOptions: {
+    var term = root.modelAdvisorModelSearch.trim().toLowerCase()
+    var options = []
+    var seen = {}
+    for (var i = 0; i < root.modelCatalog.length; ++i) {
+      var item = root.modelCatalog[i]
+      var id = String(item.id || "")
+      if (id && item.price_known !== false && (item.inputs || []).indexOf("text") >= 0 && (!term || id.toLowerCase().indexOf(term) >= 0 || String(item.name || "").toLowerCase().indexOf(term) >= 0)) {
+        options.push(id)
+        seen[id] = true
+      }
+    }
+    if (root.modelAdvisorModel && !seen[root.modelAdvisorModel] && root.modelCatalog.some(function(m) { return m.id === root.modelAdvisorModel && m.price_known !== false && (m.inputs || []).indexOf("text") >= 0 }) && (!term || root.modelAdvisorModel.toLowerCase().indexOf(term) >= 0)) options.unshift(root.modelAdvisorModel)
+    return options
+  }
   property bool showProviderManager: false
   property string providerManagerProfile: ""
   property string selectedManagedProvider: "auto"
@@ -257,7 +281,7 @@ ShellRoot {
     root.page = "Kanban"
   }
   function modalOpen() {
-    return root.showModels || root.showProviderManager || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor || root.showConnectionEditor
+    return root.showModels || root.showModelAdvisor || root.showProviderManager || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor || root.showConnectionEditor
   }
   property var catalogDisplayItems: {
     var rows = [], items = root.catalogItems.slice(0, root.catalogVisibleLimit), index = 0
@@ -542,6 +566,68 @@ ShellRoot {
     var changed = provider !== root.modelCatalogProvider || profile !== root.modelCatalogProfile || baseUrl !== root.modelCatalogBaseUrl
     root.showModels = true
     if (changed || !root.modelCatalog.length) root.loadModelCatalog(false, provider, profile, baseUrl)
+  }
+  function openModelAdvisor() {
+    root.showModelAdvisor = true
+    root.modelAdvisorQuestion = ""
+    modelAdvisorQuestionInput.text = ""
+    root.modelAdvisorStatus = ""
+    root.modelAdvisorSummary = ""
+    root.modelAdvisorRecommendations = []
+    root.modelAdvisorProfile = root.modelCatalogProfile || root.selectedProfile || "default"
+    root.modelAdvisorModel = ""
+    var profile = root.profileBySlug(root.modelAdvisorProfile)
+    if (root.modelCatalog.some(function(m) { return m.id === profile.model && m.price_known !== false && (m.inputs || []).indexOf("text") >= 0 })) root.modelAdvisorModel = profile.model
+    root.modelAdvisorModelSearch = ""
+    modelAdvisorModelSearchInput.text = ""
+  }
+  function modelAdvisorCandidates() {
+    return root.catalogItems.slice(0, 30).map(function(m) {
+      return {id: m.id, name: m.name, category: m.category, description: m.description,
+        input_rate: m.input_rate, output_rate: m.output_rate, price_known: m.price_known,
+        context_length: m.context_length, inputs: m.inputs || [], outputs: m.outputs || [],
+        supports_tools: (m.supported_parameters || []).indexOf("tools") >= 0 || (m.supported_parameters || []).indexOf("tool_choice") >= 0}
+    })
+  }
+  function modelAdvisorEstimatedCost() {
+    var advisorModel = root.modelCatalog.filter(function(m) { return m.id === root.modelAdvisorModel })[0]
+    if (!advisorModel || advisorModel.price_known === false) return null
+    var count = Math.min(30, root.catalogItems.length)
+    var inputTokens = 300 + Math.ceil(root.modelAdvisorQuestion.length / 4) + count * 45
+    var outputTokens = 350
+    return (Number(advisorModel.input_rate || 0) * inputTokens + Number(advisorModel.output_rate || 0) * outputTokens) / 1000000
+  }
+  function formatModelAdvisorCost(value) {
+    if (value === null || value === undefined) return "pricing unavailable"
+    if (value === 0) return "$0"
+    var rounded = Number(Number(value).toFixed(8))
+    return rounded === 0 ? "<$0.00000001" : "$" + rounded.toString()
+  }
+  function askModelAdvisor() {
+    var question = root.modelAdvisorQuestion.trim()
+    var candidates = root.modelAdvisorCandidates()
+    if (!question) { root.modelAdvisorStatus = "Describe the task you need a model for."; return }
+    if (!root.modelAdvisorModel) { root.modelAdvisorStatus = "Choose an advisor model first."; return }
+    if (root.modelAdvisorEstimatedCost() === null) { root.modelAdvisorStatus = "Request blocked: this advisor model has no published price, so its cost is unknown."; return }
+    if (!candidates.length) { root.modelAdvisorStatus = "Search or filter the catalog to matching models first."; return }
+    root.modelAdvisorLoading = true
+    var estimate = root.modelAdvisorEstimatedCost()
+    root.modelAdvisorStatus = "Sending one request to " + root.modelCatalogProvider + " · " + root.modelAdvisorModel + " using credentials from " + root.modelAdvisorProfile + ". Rough request estimate: " + root.formatModelAdvisorCost(estimate) + "."
+    root.request("POST", "/api/models/recommend", {question: question, profile: root.modelAdvisorProfile,
+      provider: root.modelCatalogProvider, model: root.modelAdvisorModel, candidates: candidates}, function(data) {
+      root.modelAdvisorLoading = false
+      root.modelAdvisorSummary = data.summary || ""
+      root.modelAdvisorRecommendations = data.recommendations || []
+      root.modelAdvisorStatus = "Compared " + data.candidate_count + " catalog results with " + data.provider + " · " + data.model + "."
+    }, function(error) {
+      root.modelAdvisorLoading = false
+      root.modelAdvisorStatus = error.error || "Could not get model recommendations"
+    }, 190000)
+  }
+  function locateRecommendedModel(modelId) {
+    root.showModelAdvisor = false
+    root.resetCatalogFilters()
+    modelSearch.text = modelId
   }
   function loadModelCatalog(force, providerOverride, profileOverride, baseUrlOverride) {
     var profile = profileOverride || (root.showProviderManager ? root.providerManagerProfile : root.selectedProfile) || "default"
@@ -2382,7 +2468,11 @@ ShellRoot {
                 Text { text: root.catalogProviderName() + " model catalog"; color: root.text; font.pixelSize: 18; font.bold: true }
                 Text { text: root.modelCatalogLoading ? "Loading " + root.catalogProviderName() + " models…" : root.modelCatalog.length + " models · " + (root.modelCatalogStale ? "cached, refresh failed" : root.modelCatalogSource === "live" ? "live catalog" : root.modelCatalogSource === "cache" ? "cached catalog" : root.modelCatalogSource) + (root.modelCatalogFetchedAt ? " · updated " + new Date(root.modelCatalogFetchedAt * 1000).toLocaleString() : ""); color: root.muted; font.pixelSize: 9 }
               }
-              Item { width: Math.max(0, parent.width - catalogHeading.implicitWidth - 88 - 24); height: 1 }
+              Item { width: Math.max(0, parent.width - catalogHeading.implicitWidth - 88 - 90 - 24); height: 1 }
+              Rectangle { width: 90; height: 34; radius: 2; color: root.selectedFill; border.color: root.border
+                Text { anchors.centerIn: parent; text: "✦ Ask AI"; color: root.blue; font.pixelSize: 9; font.bold: true }
+                MouseArea { anchors.fill: parent; enabled: !root.modelCatalogLoading && root.catalogItems.length > 0; onClicked: root.openModelAdvisor() }
+              }
               Rectangle { width: 88; height: 34; radius: 2; color: root.raised; border.color: root.border
                 Text { anchors.centerIn: parent; text: root.modelCatalogLoading ? "Loading…" : "↻ Refresh"; color: root.accent; font.pixelSize: 9; font.bold: true }
                 MouseArea { anchors.fill: parent; enabled: !root.modelCatalogLoading; onClicked: root.loadModelCatalog(true) }
@@ -2470,6 +2560,59 @@ ShellRoot {
             }
             Text { visible: !root.modelCatalogLoading && root.catalogItems.length === 0; text: root.modelCatalogError || (root.modelCatalog.length ? "No models match those filters." : "No model catalog is available for " + root.catalogProviderName() + ". Check provider credentials and refresh."); color: root.muted; font.pixelSize: 10; anchors.horizontalCenter: parent.horizontalCenter }
             Text { text: "Sample estimate uses " + root.samplePromptTokens + " input + " + root.sampleCompletionTokens + " output tokens. " + (root.modelCatalogProvider === "openrouter" ? "Published OpenRouter list prices are per million tokens; image/request charges may differ." : "A dash means this provider did not publish pricing or context details in Hermes' model list."); color: "#667783"; font.pixelSize: 8; wrapMode: Text.WordWrap; width: parent.width }
+          }
+        }
+      }
+
+      // Model selection advisor, opened from the model catalog
+      Rectangle { anchors.fill: parent; visible: root.showModelAdvisor; color: "#99070b10"; z: 41; MouseArea { anchors.fill: parent; onClicked: {} }
+        Rectangle { width: Math.min(760, parent.width - 24); height: Math.min(740, parent.height - 24); radius: 2; color: root.surface; border.color: "#7f9db9"; anchors.centerIn: parent; clip: true; MouseArea { anchors.fill: parent }
+          XpTitleBar { z: 2; anchors.top: parent.top; width: parent.width; caption: "Ask AI · Model Advisor"; darkMode: root.darkMode; onCloseRequested: root.showModelAdvisor = false }
+          Flickable { id: modelAdvisorScroll; anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 16; anchors.topMargin: 48; anchors.bottomMargin: 10; clip: true; contentWidth: width; contentHeight: modelAdvisorForm.implicitHeight; boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            Column { id: modelAdvisorForm; width: modelAdvisorScroll.width - 12; spacing: 9
+              Text { text: "Describe your task and get a ranked recommendation from the models currently in this catalog."; color: root.text; font.pixelSize: 14; font.bold: true; wrapMode: Text.WordWrap; width: parent.width }
+              TextArea { id: modelAdvisorQuestionInput; width: parent.width; height: 84; text: root.modelAdvisorQuestion; onTextChanged: root.modelAdvisorQuestion = text; enabled: !root.modelAdvisorLoading; color: root.text; font.pixelSize: 10; wrapMode: TextEdit.Wrap; placeholderText: "Example: Audit a medium-size Python repo for security issues and actionable bugs. I care more about careful analysis than speed."; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              Row { width: parent.width; height: 32; spacing: 8
+                Text { text: "CREDENTIALS FROM"; color: root.muted; font.pixelSize: 8; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                ComboBox { id: modelAdvisorProfilePicker; width: parent.width - 158; height: 32; model: root.profiles.map(function(p) { return p.slug + " · " + p.model }); currentIndex: Math.max(0, root.profiles.map(function(p) { return p.slug }).indexOf(root.modelAdvisorProfile)); onActivated: if (root.profiles[currentIndex]) root.modelAdvisorProfile = root.profiles[currentIndex].slug; contentItem: Text { text: modelAdvisorProfilePicker.displayText; color: root.text; font.pixelSize: 8; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 8; rightPadding: 15 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              }
+              Row { width: parent.width; height: 30; spacing: 8
+                Text { text: "ADVISOR MODEL"; color: root.muted; font.pixelSize: 8; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                Text { text: root.catalogProviderName(); color: root.accent; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
+                Item { width: Math.max(0, parent.width - 215); height: 1 }
+                Text { text: root.modelAdvisorModelOptions.length + " options"; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
+              }
+              TextField { id: modelAdvisorModelSearchInput; width: parent.width; height: 30; text: root.modelAdvisorModelSearch; onTextChanged: root.modelAdvisorModelSearch = text; enabled: !root.modelAdvisorLoading; color: root.text; font.pixelSize: 9; placeholderText: "Search priced text models in the " + root.catalogProviderName() + " catalog…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: modelAdvisorModelPicker; width: parent.width; height: 34; model: root.modelAdvisorModelOptions; currentIndex: root.modelAdvisorModelOptions.indexOf(root.modelAdvisorModel); enabled: root.modelAdvisorModelOptions.length > 0 && !root.modelAdvisorLoading; onActivated: root.modelAdvisorModel = currentText; contentItem: Text { text: root.modelAdvisorModel || "Choose the model that will answer"; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 15 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              Text { width: parent.width; height: 38; color: root.muted; font.pixelSize: 8; wrapMode: Text.WordWrap; text: {
+                  var estimate = root.modelAdvisorEstimatedCost()
+                  var count = Math.min(30, root.catalogItems.length)
+                  var tokens = 300 + Math.ceil(root.modelAdvisorQuestion.length / 4) + count * 45
+                  return "Compares only the first " + count + " results matching your current catalog search/filters. " + (estimate === null ? "Request stays blocked until you choose an advisor model with published pricing." : "Rough advisor request estimate: " + root.formatModelAdvisorCost(estimate) + " (~" + tokens + " input / 350 output tokens).") + " One explicit request; provider billing can differ from this estimate."
+                } }
+              Row { width: parent.width; height: 36; spacing: 8
+                Rectangle { width: 130; height: 34; radius: 2; color: root.modelAdvisorLoading ? root.border : root.accent
+                  Text { anchors.centerIn: parent; text: root.modelAdvisorLoading ? "Asking…" : "Ask AI"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                  MouseArea { anchors.fill: parent; enabled: !root.modelAdvisorLoading && root.modelAdvisorModel.length > 0 && root.modelAdvisorEstimatedCost() !== null; onClicked: root.askModelAdvisor() }
+                }
+                Text { text: root.modelAdvisorLoading ? "Waiting for one response from the selected model…" : "No request runs until you press Ask AI."; color: root.modelAdvisorLoading ? root.blue : root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter; wrapMode: Text.WordWrap; width: parent.width - 145 }
+              }
+              Text { visible: root.modelAdvisorStatus.length > 0; text: root.modelAdvisorStatus; width: parent.width; height: visible ? 42 : 0; color: text.indexOf("Could not") === 0 || text.indexOf("did not") >= 0 ? "#d86b62" : root.muted; font.pixelSize: 8; wrapMode: Text.WordWrap; maximumLineCount: 3; verticalAlignment: Text.AlignVCenter }
+              Text { visible: root.modelAdvisorSummary.length > 0; text: root.modelAdvisorSummary; width: parent.width; color: root.text; font.pixelSize: 10; wrapMode: Text.WordWrap }
+              Repeater { model: root.modelAdvisorRecommendations
+                delegate: Rectangle { required property var modelData; width: modelAdvisorForm.width; height: recommendationText.implicitHeight + 18; radius: 2; color: root.raised; border.color: root.border
+                  Column { id: recommendationText; anchors.left: parent.left; anchors.right: locateButton.left; anchors.verticalCenter: parent.verticalCenter; anchors.leftMargin: 10; anchors.rightMargin: 8; spacing: 3
+                    Text { text: (index + 1) + ".  " + modelData.id; color: root.accent; font.pixelSize: 10; font.bold: true; width: parent.width; wrapMode: Text.WordWrap }
+                    Text { text: modelData.reason + (modelData.tradeoff ? "\nTrade-off: " + modelData.tradeoff : ""); color: root.text; font.pixelSize: 8; width: parent.width; wrapMode: Text.WordWrap }
+                  }
+                  Rectangle { id: locateButton; width: 84; height: 28; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; anchors.rightMargin: 8; radius: 2; color: root.selectedFill; border.color: root.border
+                    Text { anchors.centerIn: parent; text: "Find model"; color: root.blue; font.pixelSize: 8; font.bold: true }
+                    MouseArea { anchors.fill: parent; onClicked: root.locateRecommendedModel(modelData.id) }
+                  }
+                }
+              }
+            }
           }
         }
       }

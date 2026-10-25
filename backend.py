@@ -1373,6 +1373,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.manage_profile(payload)
             elif self.path == "/api/profile/generate":
                 self.generate_profile_prompt(payload)
+            elif self.path == "/api/models/recommend":
+                self.recommend_catalog_models(payload)
             elif self.path == "/api/favorite/model":
                 self.favorite_model(payload)
             elif self.path == "/api/prompt/save":
@@ -1572,6 +1574,94 @@ Role and specialty requested by the user: {inferred_role}
             raise RuntimeError("Hermes returned an incomplete or unstructured personality. Check the generator profile’s model and try again.")
         self.send_json({"ok": True, "personality": result, "generator_profile": source,
                         "provider": provider, "model": model})
+
+    def recommend_catalog_models(self, p):
+        question = str(p.get("question", "")).strip()
+        if not question or len(question) > 2000:
+            raise ValueError("Describe what you want the model to do (up to 2,000 characters)")
+        source = safe_slug(str(p.get("profile", "default")))
+        if source not in profile_slugs():
+            raise ValueError("Choose an existing profile to supply provider credentials")
+        provider = str(p.get("provider", "")).strip().lower()
+        model = str(p.get("model", "")).strip()
+        providers = {entry["id"] for entry in installed_model_providers()}
+        if provider not in providers:
+            raise ValueError("Choose a supported provider for the advisor model")
+        if not model or len(model) > 200 or model.startswith("-") or any(char.isspace() or ord(char) < 32 for char in model):
+            raise ValueError("Choose a valid advisor model from the catalog")
+        raw_candidates = p.get("candidates")
+        if not isinstance(raw_candidates, list) or not raw_candidates:
+            raise ValueError("Search or filter the catalog to at least one candidate model first")
+        if len(raw_candidates) > 30:
+            raise ValueError("The advisor can compare up to 30 matching models at a time; narrow the catalog search")
+        candidates = []
+        seen = set()
+        for row in raw_candidates:
+            if not isinstance(row, dict):
+                continue
+            model_id = str(row.get("id", "")).strip()
+            if not model_id or len(model_id) > 200 or model_id in seen:
+                continue
+            seen.add(model_id)
+            candidates.append({
+                "id": model_id,
+                "name": str(row.get("name", model_id))[:120],
+                "category": str(row.get("category", "Other"))[:40],
+                "description": str(row.get("description", ""))[:180],
+                "input_usd_per_million": max(0.0, _float(row.get("input_rate"))),
+                "output_usd_per_million": max(0.0, _float(row.get("output_rate"))),
+                "pricing_available": bool(row.get("price_known", False)),
+                "context_tokens": max(0, int(_float(row.get("context_length")))),
+                "input_modalities": [str(x)[:20] for x in row.get("inputs", [])[:8] if isinstance(x, str)],
+                "output_modalities": [str(x)[:20] for x in row.get("outputs", [])[:8] if isinstance(x, str)],
+                "supports_tools": bool(row.get("supports_tools", False)),
+            })
+        if not candidates:
+            raise ValueError("No valid catalog models were supplied")
+        candidate_json = json.dumps(candidates, ensure_ascii=False, separators=(",", ":"))
+        prompt = f"""Help choose a model for this task using ONLY the supplied catalog candidates.
+
+Task and constraints from the user:
+{question}
+
+The candidate list reflects the current provider and filters in Hermes LW. Do not invent model IDs or recommend anything outside the list. Weigh task fit, capabilities, context, and published cost. Pricing marked unavailable must be described as unknown, never assumed free. Return 1–3 distinct recommendations in ranked order, with concise reasons and trade-offs. Return valid JSON only in this shape: {{"recommendations":[{{"id":"exact candidate ID","reason":"why it fits","tradeoff":"what to consider"}}],"summary":"brief comparison"}}.
+
+Candidates:
+{candidate_json}
+"""
+        try:
+            completed = run_profile_hermes(source, ["chat", "-q", prompt, "-Q", "--source", "tool",
+                                                     "--provider", provider, "--model", model,
+                                                     "--toolsets", "__hermes_lw_no_tools__"], timeout=180)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("The advisor model did not respond within 180 seconds. Check provider and network settings.") from exc
+        if completed.returncode:
+            detail = (completed.stderr or completed.stdout or "Hermes exited without an error message").strip()
+            raise RuntimeError("Could not get model recommendations: " + detail[-1000:])
+        result = completed.stdout.strip()
+        result = re.sub(r"^```(?:json)?\s*|\s*```$", "", result, flags=re.IGNORECASE).strip()
+        try:
+            answer = json.loads(result)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("The advisor model did not return valid recommendations. Try again or choose another model.") from exc
+        allowed = {row["id"] for row in candidates}
+        recommendations = []
+        for row in answer.get("recommendations", []) if isinstance(answer, dict) else []:
+            if not isinstance(row, dict) or row.get("id") not in allowed:
+                continue
+            if any(item["id"] == row["id"] for item in recommendations):
+                continue
+            recommendations.append({"id": row["id"],
+                                    "reason": str(row.get("reason", ""))[:1000],
+                                    "tradeoff": str(row.get("tradeoff", ""))[:1000]})
+            if len(recommendations) == 3:
+                break
+        if not recommendations:
+            raise RuntimeError("The advisor did not choose any of the visible catalog candidates. Try a narrower question or another advisor model.")
+        self.send_json({"ok": True, "recommendations": recommendations,
+                        "summary": str(answer.get("summary", ""))[:2000],
+                        "advisor_profile": source, "provider": provider, "model": model,
+                        "candidate_count": len(candidates)})
 
     def favorite_model(self, p):
         model_id = str(p.get("id", "")).strip()
