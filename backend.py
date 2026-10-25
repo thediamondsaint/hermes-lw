@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import shutil
+import shlex
 import subprocess
 import threading
 import time
@@ -327,7 +328,7 @@ def _float(value) -> float:
         return 0.0
 
 
-def load_model_catalog(force: bool = False) -> dict:
+def load_openrouter_model_catalog(force: bool = False) -> dict:
     cache = {}
     try:
         cache = json.loads(MODEL_CACHE.read_text())
@@ -362,6 +363,154 @@ def load_model_catalog(force: bool = False) -> dict:
         if cache.get("models"):
             return {"models": cache["models"], "fetched_at": cache.get("fetched_at", 0), "source": "cache", "stale": True, "error": str(exc)}
         raise RuntimeError(f"Could not load OpenRouter's model catalog: {exc}")
+
+
+def _profile_catalog_environment(slug: str, provider: str) -> dict[str, str]:
+    """Build a child Hermes environment scoped to one profile, without logging secrets."""
+    home = HERMES if slug == "default" else PROFILES / slug
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(home)
+    env_names = {name for entry in installed_model_providers() if entry["id"] == provider
+                 for name in entry.get("env_vars", [])}
+    if provider == "custom":
+        env_names.update({"CUSTOM_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"})
+    if not profile_env_path(slug).exists():
+        return env
+    for line in profile_env_path(slug).read_text().splitlines():
+        match = re.match(r"^\s*(?:export\s+)?([A-Z][A-Z0-9_]{0,63})\s*=\s*(.*)$", line)
+        if not match:
+            continue
+        name, value = match.groups()
+        if name not in env_names and not name.endswith(("_API_KEY", "_TOKEN", "_BASE_URL")) and name not in {"GH_TOKEN", "GITHUB_TOKEN"}:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        env[name] = value
+    return env
+
+
+def _provider_catalog_entry(model_id: str, provider: str) -> dict:
+    """Give Hermes' provider model IDs the common catalog row shape."""
+    lower = model_id.lower()
+    if any(term in lower for term in ("embedding", "embed-", "embed/")):
+        category, inputs, outputs = "Embeddings", ["text"], ["embeddings"]
+    elif any(term in lower for term in ("rerank", "re-rank")):
+        category, inputs, outputs = "Reranking", ["text"], ["text"]
+    elif any(term in lower for term in ("image-gen", "image_generation", "flux", "dall-e", "imagen", "stable-diffusion")):
+        category, inputs, outputs = "Image generation", ["text"], ["image"]
+    elif any(term in lower for term in ("vision", "-vl", "vl-", "llava", "pixtral")):
+        category, inputs, outputs = "Vision", ["text", "image"], ["text"]
+    elif any(term in lower for term in ("audio", "speech", "whisper", "tts", "transcri")):
+        category = "Audio"
+        inputs = ["audio"] if any(term in lower for term in ("whisper", "transcri", "stt", "audio-in")) else ["text"]
+        outputs = ["audio"] if any(term in lower for term in ("tts", "speech", "audio-out")) else ["text"]
+    elif "video" in lower or "veo" in lower or "sora" in lower:
+        category, inputs, outputs = "Video", ["text"], ["video"]
+    elif any(term in lower for term in ("code", "coder", "codex", "devstral")):
+        category, inputs, outputs = "Coding", ["text"], ["text"]
+    elif any(term in lower for term in ("reason", "thinking", "deepseek-r1", "o1", "o3", "o4")):
+        category, inputs, outputs = "Decision", ["text"], ["text"]
+    else:
+        category, inputs, outputs = "Text & chat", ["text"], ["text"]
+    return {
+        "id": model_id, "name": model_id, "description": f"Model offered by {provider}",
+        "category": category, "input_rate": 0, "output_rate": 0, "image_rate": 0,
+        "request_rate": 0, "price_known": False, "inputs": inputs, "outputs": outputs,
+        "supported_parameters": [], "context_length": 0, "max_completion_tokens": 0,
+        "created": 0,
+    }
+
+
+def load_provider_model_catalog(provider: str, slug: str, force: bool = False, base_url: str = "") -> dict:
+    """Ask the installed Hermes provider registry for a profile's model IDs."""
+    if slug not in profile_slugs():
+        raise ValueError("Choose an existing Hermes profile")
+    config_path, _ = profile_paths(slug)
+    try:
+        cfg = yaml.safe_load(config_path.read_text()) or {}
+    except (OSError, yaml.YAMLError):
+        cfg = {}
+    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    requested_provider = provider.strip().lower()
+    if requested_provider == "auto":
+        requested_provider = str(model_cfg.get("provider", "auto")).strip().lower()
+    if requested_provider == "auto":
+        raise ValueError("Automatic routing has no single model list. Choose a specific provider in the catalog.")
+    available = {entry["id"] for entry in installed_model_providers()}
+    if requested_provider not in available:
+        raise ValueError("This provider is not installed in the selected Hermes environment")
+    if requested_provider == "openrouter":
+        result = load_openrouter_model_catalog(force)
+        result["provider"] = requested_provider
+        return result
+
+    if requested_provider == "custom":
+        base_url = base_url.strip() or str(model_cfg.get("base_url", "")).strip()
+        if base_url:
+            if not re.match(r"^https?://", base_url, re.I) or len(base_url) > 2048 or any(c in base_url for c in "\r\n"):
+                raise ValueError("Custom model-list URL must be a valid http:// or https:// URL")
+            parsed = urllib.parse.urlsplit(base_url)
+            if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise ValueError("Custom model-list URL cannot contain credentials, query parameters, or a fragment")
+        else:
+            raise ValueError("Set and save a custom endpoint URL before browsing its models")
+
+    executable = shutil.which("hermes")
+    if not executable:
+        raise RuntimeError("Hermes CLI is required for provider model discovery")
+    python = Path(executable).resolve().with_name("python")
+    if not python.exists():
+        raise RuntimeError("Could not find the Python environment used by the installed Hermes CLI")
+    env = _profile_catalog_environment(slug, requested_provider)
+    if requested_provider == "custom" and base_url:
+        env["HERMES_CATALOG_BASE_URL"] = base_url
+    script = """import json, os
+import hermes_cli.models as models
+base_url = os.environ.get('HERMES_CATALOG_BASE_URL', '')
+if base_url:
+    original = models._get_model_config_dict
+    def custom_model_config():
+        config = dict(original())
+        config['base_url'] = base_url
+        return config
+    models._get_model_config_dict = custom_model_config
+ids = models.cached_provider_model_ids(os.environ['HERMES_CATALOG_PROVIDER'], force_refresh=os.environ.get('HERMES_CATALOG_REFRESH') == '1')
+print(json.dumps(ids))
+"""
+    env["HERMES_CATALOG_PROVIDER"] = requested_provider
+    env["HERMES_CATALOG_REFRESH"] = "1" if force else "0"
+    try:
+        completed = subprocess.run([str(python), "-c", script], env=env, text=True,
+                                   capture_output=True, timeout=40, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Timed out while loading {requested_provider} models") from exc
+    if completed.returncode:
+        raise RuntimeError(f"Could not load {requested_provider} models from Hermes")
+    try:
+        ids = json.loads(completed.stdout.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError) as exc:
+        raise RuntimeError(f"Hermes returned an invalid {requested_provider} model list") from exc
+    if not isinstance(ids, list):
+        raise RuntimeError(f"Hermes returned an invalid {requested_provider} model list")
+    models = []
+    seen = set()
+    for value in ids:
+        model_id = str(value).strip()
+        key = model_id.casefold()
+        if model_id and len(model_id) <= 256 and key not in seen:
+            seen.add(key)
+            models.append(_provider_catalog_entry(model_id, requested_provider))
+    if not models:
+        raise RuntimeError(f"Hermes did not find any models for {requested_provider}. Check the profile's provider credentials and refresh.")
+    return {"models": models, "provider": requested_provider, "fetched_at": int(time.time()),
+            "source": "Hermes provider catalog", "stale": False}
+
+
+def load_model_catalog(force: bool = False, provider: str = "openrouter", slug: str = "default", base_url: str = "") -> dict:
+    if provider.strip().lower() == "openrouter":
+        return load_openrouter_model_catalog(force)
+    return load_provider_model_catalog(provider, slug, force, base_url)
 
 
 def read_projects(settings: dict | None = None) -> list[dict]:
@@ -459,6 +608,273 @@ def strip_secrets(value):
     return value
 
 
+def profile_hermes_home(slug: str) -> Path:
+    return HERMES if slug == "default" else PROFILES / slug
+
+
+def run_profile_hermes(slug: str, args: list[str], timeout: int = 25) -> subprocess.CompletedProcess:
+    """Run a Hermes management command against one isolated profile."""
+    safe_slug(slug)
+    executable = shutil.which("hermes")
+    if not executable:
+        raise RuntimeError("Hermes CLI is not available")
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(profile_hermes_home(slug))
+    return subprocess.run([executable, *args], cwd=str(HOME), env=env, text=True,
+                          capture_output=True, timeout=timeout, check=False)
+
+
+def plugin_list_for_profile(slug: str) -> list[dict]:
+    result = run_profile_hermes(slug, ["plugins", "list", "--json"])
+    if result.returncode:
+        raise RuntimeError("Could not read the Hermes plugin list")
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Hermes returned an invalid plugin list") from exc
+    rows = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}", str(item.get("name", ""))):
+            continue
+        row = dict(item)
+        row["enabled"] = str(item.get("status", "")).lower() == "enabled"
+        rows.append(row)
+    return rows
+
+
+def tool_list_for_profile(slug: str, platform: str) -> list[dict]:
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", platform):
+        raise ValueError("Invalid Hermes platform")
+    result = run_profile_hermes(slug, ["tools", "list", "--platform", platform])
+    if result.returncode:
+        raise RuntimeError("Could not read the Hermes tool list")
+    rows = []
+    for line in result.stdout.splitlines():
+        match = re.match(r"^\s*[✓✗]\s+(enabled|disabled)\s+([a-zA-Z0-9_.:-]{1,160})\s{2,}(.*)$", line)
+        if match:
+            state, name, description = match.groups()
+            rows.append({"name": name, "enabled": state == "enabled", "description": description.strip()})
+    return rows
+
+
+def mcp_servers_for_profile(slug: str) -> list[dict]:
+    config_path, _ = profile_paths(slug)
+    try:
+        config = yaml.safe_load(config_path.read_text()) or {}
+    except (OSError, yaml.YAMLError):
+        config = {}
+    servers = config.get("mcp_servers") if isinstance(config, dict) else {}
+    if not isinstance(servers, dict):
+        return []
+    result = []
+    for name, value in servers.items():
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}", str(name)) or not isinstance(value, dict):
+            continue
+        command = str(value.get("command") or "")
+        url = str(value.get("url") or value.get("endpoint") or "")
+        env_values = value.get("env") if isinstance(value.get("env"), dict) else {}
+        headers = value.get("headers") if isinstance(value.get("headers"), dict) else {}
+        args = value.get("args", []) if isinstance(value.get("args"), list) else []
+        result.append({"name": str(name), "transport": "stdio" if command else "http",
+                       "command": Path(command).name if command else "", "args_count": len(args),
+                       "endpoint_host": urllib.parse.urlsplit(url).hostname or "" if url else "",
+                       "env_names": sorted(str(key) for key in env_values),
+                       "header_names": sorted(str(key) for key in headers),
+                       "enabled": bool(value.get("enabled", True))})
+    return result
+
+
+def mcp_catalog_for_profile(slug: str) -> list[dict]:
+    result = run_profile_hermes(slug, ["mcp", "catalog"])
+    if result.returncode:
+        return []
+    rows = []
+    for line in result.stdout.splitlines():
+        match = re.match(r"^\s*([a-zA-Z0-9][a-zA-Z0-9_.-]{0,63})\s+available\s{2,}(.*)$", line)
+        if match:
+            name, description = match.groups()
+            rows.append({"name": name, "description": description.strip()})
+    return rows
+
+
+def extensions_for_profile(slug: str, platform: str = "cli") -> dict:
+    safe_slug(slug)
+    return {"profile": slug, "platform": platform,
+            "plugins": plugin_list_for_profile(slug),
+            "tools": tool_list_for_profile(slug, platform),
+            "mcp_servers": mcp_servers_for_profile(slug),
+            "mcp_catalog": mcp_catalog_for_profile(slug)}
+
+
+def perform_extension_action(payload: dict) -> dict:
+    slug = safe_slug(str(payload.get("profile", "")))
+    kind = str(payload.get("kind", ""))
+    action = str(payload.get("action", ""))
+    if kind == "plugin":
+        if action == "install":
+            identifier = str(payload.get("identifier", "")).strip()
+            if not identifier or len(identifier) > 300 or any(ord(c) < 32 for c in identifier):
+                raise ValueError("Enter a GitHub owner/repository or plugin Git URL")
+            args = ["plugins", "install", identifier, "--no-enable"]
+            result = run_profile_hermes(slug, args, timeout=120)
+        else:
+            name = str(payload.get("name", "")).strip()
+            if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}", name):
+                raise ValueError("Invalid plugin name")
+            plugins = plugin_list_for_profile(slug)
+            item = next((plugin for plugin in plugins if plugin.get("name") == name), None)
+            if not item:
+                raise ValueError("Plugin is not installed for this profile")
+            source = str(item.get("source", ""))
+            if action == "toggle":
+                enabled = bool(payload.get("enabled"))
+                if enabled:
+                    args = ["plugins", "enable", name,
+                            "--allow-tool-override" if payload.get("allow_tool_override") else "--no-allow-tool-override"]
+                else:
+                    args = ["plugins", "disable", name]
+            elif action == "update":
+                if source not in {"git", "user"}:
+                    raise ValueError("Only Git or user-installed plugins can be updated")
+                args = ["plugins", "update", name]
+            elif action == "remove":
+                if source not in {"git", "user"}:
+                    raise ValueError("Bundled plugins cannot be removed")
+                args = ["plugins", "remove", name]
+            else:
+                raise ValueError("Unknown plugin action")
+            result = run_profile_hermes(slug, args, timeout=120)
+    elif kind == "tool":
+        platform = str(payload.get("platform", "cli"))
+        name = str(payload.get("name", "")).strip()
+        if not re.fullmatch(r"[a-zA-Z0-9_.:-]{1,160}", name):
+            raise ValueError("Invalid Hermes tool or toolset name")
+        available = tool_list_for_profile(slug, platform)
+        if not any(tool["name"] == name for tool in available):
+            raise ValueError("This tool is not available for the selected platform")
+        verb = "enable" if bool(payload.get("enabled")) else "disable"
+        result = run_profile_hermes(slug, ["tools", verb, "--platform", platform, name])
+    elif kind == "mcp":
+        if action == "catalog":
+            name = str(payload.get("name", "")).strip()
+            entries = mcp_catalog_for_profile(slug)
+            if not any(entry["name"] == name for entry in entries):
+                raise ValueError("Choose an MCP app from the Hermes catalog")
+            result = run_profile_hermes(slug, ["mcp", "install", name], timeout=120)
+        elif action == "add":
+            name = str(payload.get("name", "")).strip()
+            if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}", name):
+                raise ValueError("MCP app names may use letters, numbers, dots, underscores, and dashes")
+            kind_value = str(payload.get("transport", "stdio"))
+            auth = str(payload.get("auth", ""))
+            if auth and auth not in {"oauth", "header"}:
+                raise ValueError("Choose a supported MCP authentication method")
+            if kind_value == "http":
+                endpoint = str(payload.get("url", "")).strip()
+                parsed = urllib.parse.urlsplit(endpoint)
+                if not parsed.scheme in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or len(endpoint) > 2048:
+                    raise ValueError("Enter a valid HTTP or HTTPS MCP endpoint without embedded credentials")
+                api_key = str(payload.get("api_key", ""))
+                if len(api_key) > 8192 or any(c in api_key for c in "\r\n"):
+                    raise ValueError("MCP credentials must be 8,192 characters or fewer and contain no line breaks")
+                if auth == "header" and not api_key:
+                    raise ValueError("Paste a bearer token for header authentication")
+                if (api_key or auth == "oauth") and parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+                    raise ValueError("Use HTTPS for remote MCP apps when sending a credential")
+                if name in {server["name"] for server in mcp_servers_for_profile(slug)}:
+                    raise ValueError("An MCP app with this name already exists; remove it before adding a replacement")
+                # Hermes' CLI wizard requires an interactive terminal. Use its own
+                # validated config/env helpers non-interactively instead.
+                executable = shutil.which("hermes")
+                if not executable:
+                    raise RuntimeError("Hermes CLI is not available")
+                python = Path(executable).resolve().with_name("python")
+                if not python.exists():
+                    raise RuntimeError("Could not find the Python environment used by Hermes")
+                script = """import json, sys
+from hermes_cli.mcp_config import _save_mcp_server, _env_key_for_server, _bearer_auth_headers, _strip_bearer_prefix
+from hermes_cli.config import save_env_value
+data = json.load(sys.stdin)
+name = data['name']
+config = {'url': data['url']}
+if data.get('auth') == 'oauth':
+    config['auth'] = 'oauth'
+elif data.get('auth') == 'header':
+    key = _env_key_for_server(name)
+    save_env_value(key, _strip_bearer_prefix(data['api_key']))
+    config['headers'] = _bearer_auth_headers(name)
+ok = _save_mcp_server(name, config)
+print(json.dumps({'ok': bool(ok)}))
+"""
+                env = os.environ.copy()
+                env["HERMES_HOME"] = str(profile_hermes_home(slug))
+                completed = subprocess.run([str(python), "-c", script], input=json.dumps({"name": name, "url": endpoint, "auth": auth, "api_key": api_key}),
+                                           env=env, text=True, capture_output=True, timeout=25, check=False)
+                if completed.returncode or not completed.stdout.strip().endswith('{"ok": true}'):
+                    raise RuntimeError("Hermes could not save the MCP app configuration")
+                return {"ok": True, "profile": slug, "message": "MCP app saved to this profile"}
+            elif kind_value == "stdio":
+                command = str(payload.get("command", "")).strip()
+                if not command or len(command) > 256 or any(ord(c) < 32 for c in command):
+                    raise ValueError("Enter a local MCP command")
+                env_values = payload.get("env", {})
+                if not isinstance(env_values, dict):
+                    raise ValueError("MCP environment values must be an object")
+                for key, value in env_values.items():
+                    key = str(key).strip()
+                    value = str(value)
+                    if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", key) or len(value) > 8192 or any(c in value for c in "\r\n"):
+                        raise ValueError("MCP environment names or values are invalid")
+                arg_text = str(payload.get("args", ""))
+                if len(arg_text) > 2048:
+                    raise ValueError("MCP arguments are too long")
+                try:
+                    parsed_args = shlex.split(arg_text)
+                except ValueError as exc:
+                    raise ValueError("Check the quotes in the MCP arguments") from exc
+                if any(any(ord(c) < 32 for c in item) for item in parsed_args):
+                    raise ValueError("MCP arguments contain invalid characters")
+                if name in {server["name"] for server in mcp_servers_for_profile(slug)}:
+                    raise ValueError("An MCP app with this name already exists; remove it before adding a replacement")
+                executable = shutil.which("hermes")
+                if not executable:
+                    raise RuntimeError("Hermes CLI is not available")
+                python = Path(executable).resolve().with_name("python")
+                script = """import json, sys
+from hermes_cli.mcp_config import _save_mcp_server
+data = json.load(sys.stdin)
+config = {'command': data['command']}
+if data.get('args'): config['args'] = data['args']
+if data.get('env'): config['env'] = data['env']
+print(json.dumps({'ok': bool(_save_mcp_server(data['name'], config))}))
+"""
+                env = os.environ.copy()
+                env["HERMES_HOME"] = str(profile_hermes_home(slug))
+                completed = subprocess.run([str(python), "-c", script], input=json.dumps({"name": name, "command": command, "args": parsed_args, "env": env_values}),
+                                           env=env, text=True, capture_output=True, timeout=25, check=False)
+                if completed.returncode or not completed.stdout.strip().endswith('{"ok": true}'):
+                    raise RuntimeError("Hermes could not save the MCP app configuration")
+                return {"ok": True, "profile": slug, "message": "MCP app saved to this profile"}
+            else:
+                raise ValueError("Choose HTTP or local stdio for the MCP app")
+        elif action in {"remove", "test"}:
+            name = str(payload.get("name", "")).strip()
+            if not any(server["name"] == name for server in mcp_servers_for_profile(slug)):
+                raise ValueError("MCP app is not configured for this profile")
+            args = ["mcp", "remove" if action == "remove" else "test", name]
+            result = run_profile_hermes(slug, args, timeout=90)
+        else:
+            raise ValueError("Unknown MCP app action")
+    else:
+        raise ValueError("Unknown extension action")
+
+    if result.returncode:
+        # Child output can contain provider URLs or command environment values.
+        # Keep those details in Hermes' own logs rather than returning them here.
+        raise RuntimeError("Hermes could not complete that extension action. Check its profile setup and logs.")
+    return {"ok": True, "profile": slug, "message": "Hermes profile updated"}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
@@ -523,7 +939,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"providers": installed_model_providers()})
             elif route.path == "/api/models":
                 query = urllib.parse.parse_qs(route.query)
-                self.send_json(load_model_catalog(force=query.get("refresh") == ["1"]))
+                provider = str(query.get("provider", ["openrouter"])[0]).strip().lower()
+                slug = safe_slug(str(query.get("profile", ["default"])[0]))
+                base_url = str(query.get("base_url", [""])[0])
+                self.send_json(load_model_catalog(force=query.get("refresh") == ["1"], provider=provider,
+                                                  slug=slug, base_url=base_url))
+            elif route.path == "/api/extensions":
+                query = urllib.parse.parse_qs(route.query)
+                slug = safe_slug(str(query.get("profile", ["default"])[0]))
+                platform = str(query.get("platform", ["cli"])[0])
+                self.send_json(extensions_for_profile(slug, platform))
             elif route.path.startswith("/api/profile/"):
                 slug = safe_slug(route.path.removeprefix("/api/profile/"))
                 config_path, soul_path = profile_paths(slug)
@@ -575,6 +1000,8 @@ class Handler(BaseHTTPRequestHandler):
                     configured = key_name in credential_env_names(env_path)
                 self.send_json({"ok": True, "configured": configured,
                                 "configured_api_keys": credential_env_names(profile_env_path(slug))})
+            elif self.path == "/api/extensions/action":
+                self.send_json(perform_extension_action(payload))
             elif self.path == "/api/task/create":
                 title = str(payload.get("title", "")).strip()
                 if not title:

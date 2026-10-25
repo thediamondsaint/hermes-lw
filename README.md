@@ -13,6 +13,8 @@ The prototype reads the installed Hermes profile files and current board through
 
 **Provider Connections** opens a dedicated window from Options. Choose a Hermes profile, search and filter the providers installed with Hermes, inspect each provider's setup status and credential variables, set its model ID or a custom/local endpoint URL, and save or clear that profile's API key without displaying its value. OpenRouter model choices flow from the catalog into this window.
 
+The model catalog follows the provider selected for the active profile. OpenRouter uses its full priced catalog; other providers use model IDs discovered through Hermes' installed provider registry and profile credentials. Since Hermes does not return consistent pricing metadata for those catalogs, their prices are labeled unavailable. **Plugins & Tools** manages profile-scoped Hermes plugins, platform-specific toolsets, and MCP app connections. Plugin installs start disabled, enabling tool overrides requires an explicit opt-in, and plugin source trust is called out in the UI. MCP apps can be added as local stdio processes or remote HTTP services, installed from Hermes' catalog, tested, and removed. Remote bearer tokens are stored in the selected profile's private `.env`; local stdio environment values follow Hermes' profile config format. The API only returns credential variable names, never their values or raw MCP command arguments. These controls use Hermes' own config and plugin validation helpers.
+
 Projects map to Hermes' isolated Kanban boards. The Projects page supports multiple boards, editable descriptions, owners, colors, budgets, deadlines, progress rollups, cost/effort totals, and JSON export to `~/Downloads`.
 
 Ten workflow additions:
@@ -36,7 +38,7 @@ The latest 25-item audit, GitHub references, and implemented fixes are documente
 
 ## Screenshots
 
-These screenshots use fictional demo profiles, prompts, and tasks.
+The workspace screenshots use fictional demo profiles, prompts, and tasks. The Plugins & Tools screenshot is cropped to the capability panel and contains no profile list or credentials.
 
 ![Hermes LW overview](screenshots/overview.png)
 
@@ -49,3 +51,5 @@ These screenshots use fictional demo profiles, prompts, and tasks.
 ![Hermes LW profiles](screenshots/profiles.png)
 
 ![Hermes LW model catalog](screenshots/model-catalog.png)
+
+![Hermes LW plugins and tools](screenshots/plugins-tools.png)

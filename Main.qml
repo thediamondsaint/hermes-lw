@@ -49,8 +49,26 @@ ShellRoot {
   property var modelCatalog: []
   property var modelProviders: []
   property string modelCatalogSource: ""
+  property string modelCatalogProvider: ""
+  property string modelCatalogProfile: ""
+  property string modelCatalogBaseUrl: ""
+  property string modelCatalogError: ""
+  property int modelCatalogRequestId: 0
   property bool modelCatalogStale: false
   property double modelCatalogFetchedAt: 0
+  property string extensionProfile: "default"
+  property string extensionTab: "Plugins"
+  property string extensionPlatform: "cli"
+  property var extensionPlugins: []
+  property var extensionTools: []
+  property var extensionMcpServers: []
+  property var extensionMcpCatalog: []
+  property bool extensionLoading: false
+  property string extensionSearch: ""
+  property string extensionInstallId: ""
+  property bool allowPluginToolOverride: false
+  property string mcpTransport: "http"
+  property string extensionError: ""
   property bool catalogAllCollapsed: false
   property var catalogCollapsedGroups: []
   property var catalogExpandedGroups: []
@@ -62,9 +80,13 @@ ShellRoot {
     for (var i = 0; i < root.modelCatalog.length; ++i) found[root.modelPublisher(root.modelCatalog[i])] = true
     return ["All publishers"].concat(Object.keys(found).sort())
   }
+  function catalogProviderName() {
+    var entry = root.providerEntry(root.modelCatalogProvider)
+    return entry.label || root.modelCatalogProvider || "Model"
+  }
   function modelPublisher(model) {
     var id = String(model.id || "")
-    return id.indexOf("/") >= 0 ? id.split("/")[0] : "Other"
+    return id.indexOf("/") >= 0 ? id.split("/")[0] : (root.modelCatalogProvider || "Other")
   }
   function catalogContextBand(model) {
     var n = Number(model.context_length || 0)
@@ -246,10 +268,10 @@ ShellRoot {
   readonly property color laneFill: darkMode ? "#172333" : "#f4f3ed"
   readonly property color hoverFill: darkMode ? "#25384d" : "#e8f0fb"
 
-  function request(method, path, payload, callback, onFailure) {
+  function request(method, path, payload, callback, onFailure, timeoutMs) {
     var xhr = new XMLHttpRequest()
     xhr.open(method, "http://127.0.0.1:18731" + path)
-    xhr.timeout = 20000
+    xhr.timeout = timeoutMs || 20000
     xhr.setRequestHeader("Content-Type", "application/json")
     root.pendingRequests += 1
     var settled = false
@@ -284,17 +306,48 @@ ShellRoot {
       if (!root.selectedProfile && root.profiles.length) root.selectedProfile = root.profiles[0].slug
     })
   }
-  function loadModelCatalog(force) {
+  function openModelCatalog(providerOverride, profileOverride, baseUrlOverride) {
+    var profile = profileOverride || (root.showProviderManager ? root.providerManagerProfile : root.selectedProfile) || "default"
+    var profileData = root.profileBySlug(profile)
+    var provider = providerOverride || (root.showProviderManager ? root.selectedManagedProvider : (providerInput.currentValue || profileData.provider || "auto"))
+    var baseUrl = baseUrlOverride || (provider === "custom" ? (root.showProviderManager ? providerManagerBaseUrl.text : baseUrlInput.text) : "")
+    var changed = provider !== root.modelCatalogProvider || profile !== root.modelCatalogProfile || baseUrl !== root.modelCatalogBaseUrl
+    root.showModels = true
+    if (changed || !root.modelCatalog.length) root.loadModelCatalog(false, provider, profile, baseUrl)
+  }
+  function loadModelCatalog(force, providerOverride, profileOverride, baseUrlOverride) {
+    var profile = profileOverride || (root.showProviderManager ? root.providerManagerProfile : root.selectedProfile) || "default"
+    var profileData = root.profileBySlug(profile)
+    var provider = providerOverride || (root.showProviderManager ? root.selectedManagedProvider : (providerInput.currentValue || profileData.provider || "auto"))
+    var baseUrl = baseUrlOverride || (provider === "custom" ? (root.showProviderManager ? providerManagerBaseUrl.text : baseUrlInput.text) : "")
+    var providerChanged = root.modelCatalogProvider !== provider || root.modelCatalogProfile !== profile || root.modelCatalogBaseUrl !== baseUrl
     root.modelCatalogLoading = true
-    request("GET", "/api/models" + (force ? "?refresh=1" : ""), null, function(data) {
+    if (providerChanged) root.modelCatalog = []
+    root.modelCatalogProvider = provider
+    root.modelCatalogProfile = profile
+    root.modelCatalogBaseUrl = baseUrl
+    root.modelCatalogError = ""
+    var requestId = ++root.modelCatalogRequestId
+    var query = "?provider=" + encodeURIComponent(provider) + "&profile=" + encodeURIComponent(profile)
+    if (force) query += "&refresh=1"
+    if (baseUrl) query += "&base_url=" + encodeURIComponent(baseUrl)
+    request("GET", "/api/models" + query, null, function(data) {
+      if (requestId !== root.modelCatalogRequestId) return
       root.modelCatalog = data.models || []
+      root.modelCatalogProvider = data.provider || provider
       root.modelCatalogSource = data.source || "cache"
       root.modelCatalogStale = !!data.stale
       root.modelCatalogFetchedAt = Number(data.fetched_at || 0)
       root.catalogVisibleLimit = 100
       root.modelCatalogLoading = false
-      if (!root.modelCatalog.length) root.notice = "OpenRouter returned no models"
-    }, function() { root.modelCatalogLoading = false })
+      root.modelCatalogError = data.error || ""
+      if (!root.modelCatalog.length) root.notice = "No models returned for " + root.catalogProviderName()
+    }, function(error) {
+      if (requestId !== root.modelCatalogRequestId) return
+      root.modelCatalog = []
+      root.modelCatalogError = error.error || ("Could not load models for " + root.catalogProviderName())
+      root.modelCatalogLoading = false
+    }, 45000)
   }
   function loadModelProviders() {
     request("GET", "/api/providers", null, function(data) {
@@ -302,6 +355,31 @@ ShellRoot {
       var provider = root.currentProfile().provider || "auto"
       providerInput.currentIndex = root.providerIndex(provider)
     })
+  }
+  function loadExtensions(profile, platform) {
+    root.extensionProfile = profile || root.selectedProfile || "default"
+    root.extensionPlatform = platform || root.extensionPlatform || "cli"
+    root.extensionLoading = true
+    request("GET", "/api/extensions?profile=" + encodeURIComponent(root.extensionProfile) + "&platform=" + encodeURIComponent(root.extensionPlatform), null, function(data) {
+      root.extensionPlugins = data.plugins || []
+      root.extensionTools = data.tools || []
+      root.extensionMcpServers = data.mcp_servers || []
+      root.extensionMcpCatalog = data.mcp_catalog || []
+      root.extensionLoading = false
+      root.extensionError = ""
+    }, function(error) { root.extensionLoading = false; root.extensionError = error.error || "Could not load Hermes capabilities" }, 45000)
+  }
+  function extensionAction(kind, action, values) {
+    var payload = values || ({})
+    payload.profile = root.extensionProfile
+    payload.kind = kind
+    payload.action = action
+    root.extensionLoading = true
+    request("POST", "/api/extensions/action", payload, function(data) {
+      root.extensionLoading = false
+      root.notice = data.message || "Hermes profile updated"
+      root.loadExtensions(root.extensionProfile, root.extensionPlatform)
+    }, function(error) { root.extensionLoading = false; root.extensionError = error.error || "Hermes action failed" }, 150000)
   }
   function providerIndex(id) {
     for (var i = 0; i < root.modelProviders.length; ++i) if (root.modelProviders[i].id === id) return i
@@ -381,15 +459,15 @@ ShellRoot {
   }
   function chooseCatalogModel(modelId) {
     if (root.showProviderManager) {
-      root.selectedManagedProvider = "openrouter"
+      if (root.selectedManagedProvider !== root.modelCatalogProvider) root.selectManagedProvider(root.modelCatalogProvider)
       providerManagerModel.text = modelId
-      providerManagerBaseUrl.text = ""
+      if (root.modelCatalogProvider !== "custom") providerManagerBaseUrl.text = ""
       root.showModels = false
       root.notice = "Selected " + modelId + " · save provider settings to use for this profile"
     } else {
       modelInput.text = modelId
-      providerInput.currentIndex = root.providerIndex("openrouter")
-      baseUrlInput.text = ""
+      providerInput.currentIndex = root.providerIndex(root.modelCatalogProvider)
+      if (root.modelCatalogProvider !== "custom") baseUrlInput.text = ""
       root.showModels = false
       root.notice = "Selected " + modelId + " · save profile to apply"
     }
@@ -740,10 +818,12 @@ ShellRoot {
   Shortcut { sequence: "Ctrl+5"; onActivated: root.page = "Prompts" }
   Shortcut { sequence: "Ctrl+6"; onActivated: root.page = "Models & Providers" }
   Shortcut { sequence: "Ctrl+7"; onActivated: root.page = "Options" }
+  Shortcut { sequence: "Ctrl+8"; onActivated: { root.page = "Plugins & Tools"; root.loadExtensions() } }
   Shortcut { sequence: "Escape"; enabled: root.showModels || root.showProviderManager || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor; onActivated: root.closeTopDialog() }
   Timer { interval: 10000; running: root.pendingRequests === 0 && !root.modalOpen(); repeat: true; onTriggered: root.refresh() }
-  Component.onCompleted: { root.refresh(); root.loadModelProviders() }
+  Component.onCompleted: { root.refresh(); root.loadModelProviders(); if (root.page === "Plugins & Tools") root.loadExtensions(root.selectedProfile, root.extensionPlatform) }
   onSelectedProfileChanged: {
+    if (root.page === "Plugins & Tools") root.loadExtensions(root.selectedProfile, root.extensionPlatform)
     var p = root.profileBySlug(root.selectedProfile)
     if (p.slug) {
       modelInput.text = p.model || ""
@@ -754,6 +834,7 @@ ShellRoot {
       profileKeyInput.text = ""
     }
   }
+  onPageChanged: if (page === "Plugins & Tools") root.loadExtensions(root.selectedProfile, root.extensionPlatform)
 
   FloatingWindow {
     id: win
@@ -788,7 +869,7 @@ ShellRoot {
                   if (index === 0) root.editProject(null)
                   else if (index === 1) root.prepareNewTask()
                   else if (index === 2) { root.showCreateProfile = true; newProfileSlug.text = ""; newProfileRole.text = ""; generatedSoul.text = ""; newProfileKey.text = "" }
-                  else if (index === 3) { root.showModels = true; if (!root.modelCatalog.length) root.loadModelCatalog(false) }
+                  else if (index === 3) root.openModelCatalog()
                   else if (index === 4) root.refresh()
                   else root.page = "Options"
                 } }
@@ -828,10 +909,10 @@ ShellRoot {
                 }
               }
               Rectangle { width: parent.width; height: 1; color: root.border }
-              Repeater { model: ["Overview", "Projects", "Models & Providers", "Profiles", "Kanban", "Prompts", "Options"]
+              Repeater { model: ["Overview", "Projects", "Models & Providers", "Profiles", "Plugins & Tools", "Kanban", "Prompts", "Options"]
                 delegate: Rectangle { required property string modelData; width: parent.width; height: 25; color: root.page === modelData ? root.selectedFill : "transparent"; border.color: root.page === modelData ? root.blue : "transparent"
                   Row { anchors.fill: parent; anchors.leftMargin: 8; spacing: 8
-                    Text { text: modelData === "Overview" ? "⌂" : modelData === "Projects" ? "▣" : modelData === "Models & Providers" || modelData === "Options" ? "⚙" : modelData === "Profiles" ? "◉" : modelData === "Kanban" ? "▦" : "✦"; color: root.page === modelData ? "#ffffff" : root.accent; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: modelData === "Overview" ? "⌂" : modelData === "Projects" ? "▣" : modelData === "Models & Providers" || modelData === "Options" ? "⚙" : modelData === "Profiles" ? "◉" : modelData === "Plugins & Tools" ? "⌘" : modelData === "Kanban" ? "▦" : "✦"; color: root.page === modelData ? "#ffffff" : root.accent; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
                     Text { text: modelData; color: root.page === modelData ? "#ffffff" : root.text; font.pixelSize: 10; anchors.verticalCenter: parent.verticalCenter }
                   }
                   MouseArea { anchors.fill: parent; onClicked: root.page = modelData }
@@ -875,11 +956,11 @@ ShellRoot {
               Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#0a3683" }
               Row { anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 12; spacing: 8
                 Column { anchors.verticalCenter: parent.verticalCenter; spacing: 2
-                  Text { text: root.page === "Overview" ? "Workspace" : root.page === "Projects" ? "Projects" : root.page === "Profiles" ? "Agent profiles" : root.page === "Models & Providers" ? "Models & Providers" : root.page === "Options" ? "Options" : root.page === "Kanban" ? "Task board" : "Prompt library"; color: "#ffffff"; font.pixelSize: 14; font.bold: true }
-                  Text { text: root.page === "Kanban" ? (root.projectInfo.name || "Default") + "  ·  " + root.tasks.length + " tasks" : root.page === "Models & Providers" ? "Choose a backend, model, and profile credentials" : root.page === "Options" ? "App-wide Hermes LW settings" : "Hermes LW"; color: "#e5efff"; font.pixelSize: 8 }
+                  Text { text: root.page === "Overview" ? "Workspace" : root.page === "Projects" ? "Projects" : root.page === "Profiles" ? "Agent profiles" : root.page === "Models & Providers" ? "Models & Providers" : root.page === "Plugins & Tools" ? "Plugins & Tools" : root.page === "Options" ? "Options" : root.page === "Kanban" ? "Task board" : "Prompt library"; color: "#ffffff"; font.pixelSize: 14; font.bold: true }
+                  Text { text: root.page === "Kanban" ? (root.projectInfo.name || "Default") + "  ·  " + root.tasks.length + " tasks" : root.page === "Models & Providers" ? "Choose a backend, model, and profile credentials" : root.page === "Plugins & Tools" ? "Profile-scoped plugins, tools, and MCP app connections" : root.page === "Options" ? "App-wide Hermes LW settings" : "Hermes LW"; color: "#e5efff"; font.pixelSize: 8 }
                 }
-                Item { width: Math.max(1, parent.width - 330); height: 1 }
-                Text { text: root.managerProfile ? "Manager: " + root.managerProfile : "No manager selected"; color: "#ffffff"; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter; MouseArea { anchors.fill: parent; onClicked: root.page = "Profiles" } }
+                Item { width: Math.max(1, parent.width - 600); height: 1 }
+                Text { width: 190; text: root.managerProfile ? "Manager: " + root.managerProfile : "No manager selected"; color: "#ffffff"; font.pixelSize: 9; elide: Text.ElideRight; horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter; MouseArea { anchors.fill: parent; onClicked: root.page = "Profiles" } }
                 Text { text: root.darkMode ? "Dark" : "Light"; color: "#ffffff"; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
               }
             }
@@ -1055,10 +1136,10 @@ ShellRoot {
                     Column { width: parent.width * 0.53; spacing: 6
                       Text { text: "DEFAULT MODEL"; color: root.muted; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.7 }
                       Row { width: parent.width; spacing: 7
-                        TextField { leftPadding: 9; rightPadding: 9; id: modelInput; width: parent.width - (providerInput.currentValue === "openrouter" ? 91 : 0); height: 38; text: parent.parent.parent.parent.current.model || ""; color: root.text; font.pixelSize: 11; placeholderText: providerInput.currentValue === "openrouter" ? "provider/model-name" : "Model ID for selected provider"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-                        Rectangle { visible: providerInput.currentValue === "openrouter"; width: visible ? 84 : 0; height: 38; radius: 2; color: root.accent; border.color: root.border
+                        TextField { leftPadding: 9; rightPadding: 9; id: modelInput; width: parent.width - 91; height: 38; text: parent.parent.parent.parent.current.model || ""; color: root.text; font.pixelSize: 11; placeholderText: providerInput.currentValue === "openrouter" ? "provider/model-name" : "Model ID for selected provider"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                        Rectangle { width: 84; height: 38; radius: 2; color: root.accent; border.color: root.border
                           Text { anchors.centerIn: parent; text: "Browse models"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
-                          MouseArea { anchors.fill: parent; onClicked: { root.showModels = true; if (!root.modelCatalog.length) root.loadModelCatalog(false) } }
+                          MouseArea { anchors.fill: parent; onClicked: root.openModelCatalog(providerInput.currentValue, root.selectedProfile, baseUrlInput.text) }
                         }
                       }
                     }
@@ -1179,11 +1260,135 @@ ShellRoot {
                 Rectangle { width: (parent.width - 12) / 2; height: parent.height; color: root.surface; border.color: root.border
                   Column { anchors.fill: parent; anchors.margins: 14; spacing: 8
                     Text { text: "KEYBOARD SHORTCUTS"; color: root.blue; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.8 }
-                    Text { text: "Ctrl+1–7  ·  Switch workspace pages\nCtrl+N  ·  New task\nCtrl+F  ·  Search current board or model catalog\nCtrl+R  ·  Refresh Hermes state"; color: root.text; font.pixelSize: 9; lineHeight: 1.15 }
+                    Text { text: "Ctrl+1–8  ·  Switch app pages\nCtrl+N  ·  New task\nCtrl+F  ·  Search current board or model catalog\nCtrl+R  ·  Refresh Hermes state"; color: root.text; font.pixelSize: 9; lineHeight: 1.15 }
                   }
                 }
               }
               Text { text: "Profile-level provider, model, reasoning, API key, and personality settings are in Models & Providers. Theme, manager, and startup board are app-wide."; color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; width: parent.width }
+            }
+
+            // PROFILE-SCOPED HERMES PLUGINS, TOOLSETS, AND MCP APP CONNECTIONS
+            Column { anchors.fill: parent; anchors.margins: 14; spacing: 10; visible: root.page === "Plugins & Tools"
+              Row { width: parent.width; height: 36; spacing: 8
+                Text { text: "Profile"; color: root.muted; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
+                ComboBox { id: extensionProfilePicker; width: 172; height: 30; model: root.profiles; textRole: "slug"; valueRole: "slug"; currentIndex: Math.max(0, root.profiles.findIndex(function(p){return p.slug === root.extensionProfile})); onActivated: root.loadExtensions(currentValue, root.extensionPlatform); contentItem: Text { text: extensionProfilePicker.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 8 } background: Rectangle { color: root.inputFill; border.color: root.border } }
+                Rectangle { width: 86; height: 30; color: root.raised; border.color: root.border
+                  Text { anchors.centerIn: parent; text: root.extensionLoading ? "Loading…" : "↻ Refresh"; color: root.accent; font.pixelSize: 9 }
+                  MouseArea { anchors.fill: parent; enabled: !root.extensionLoading; onClicked: root.loadExtensions(root.extensionProfile, root.extensionPlatform) }
+                }
+                Item { width: 1; height: 1; Layout.fillWidth: true }
+                Text { text: root.extensionPlugins.filter(function(p){return p.enabled}).length + " enabled plugins  ·  " + root.extensionTools.filter(function(t){return t.enabled}).length + " active toolsets  ·  " + root.extensionMcpServers.length + " MCP apps"; color: root.muted; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
+              }
+              Row { width: parent.width; height: 32; spacing: 5
+                Repeater { model: ["Plugins", "Tools", "MCP Apps"]
+                  delegate: Rectangle { required property string modelData; width: 94; height: 29; color: root.extensionTab === modelData ? root.selectedFill : root.raised; border.color: root.border
+                    Text { anchors.centerIn: parent; text: modelData; color: root.extensionTab === modelData ? "#ffffff" : root.text; font.pixelSize: 9; font.bold: root.extensionTab === modelData }
+                    MouseArea { anchors.fill: parent; onClicked: root.extensionTab = modelData }
+                  }
+                }
+                Item { width: 1; height: 1; Layout.fillWidth: true }
+                CheckBox { visible: root.extensionTab === "Plugins"; text: "Allow plugins to override built-in tools"; checked: root.allowPluginToolOverride; onToggled: root.allowPluginToolOverride = checked; font.pixelSize: 9 }
+              }
+              Text { visible: !!root.extensionError; width: parent.width; height: 24; text: root.extensionError; color: root.red; font.pixelSize: 9; wrapMode: Text.WordWrap }
+              Flickable { width: parent.width; height: parent.height - 90; clip: true; contentWidth: width; contentHeight: extensionContent.implicitHeight; boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                Column { id: extensionContent; width: parent.width; spacing: 8
+                  Row { visible: root.extensionTab === "Plugins"; width: parent.width; height: 36; spacing: 7
+                    TextField { id: pluginSearchEntry; width: Math.max(170, parent.width * .28); height: 32; leftPadding: 8; rightPadding: 8; placeholderText: "Filter installed plugins…"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; onTextChanged: root.extensionSearch = text; background: Rectangle { color: root.inputFill; border.color: root.border } }
+                    TextField { id: pluginInstallEntry; width: Math.max(230, parent.width * .38); height: 32; leftPadding: 8; rightPadding: 8; placeholderText: "Install from GitHub owner/repository or URL"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; background: Rectangle { color: root.inputFill; border.color: root.border } }
+                    Rectangle { width: 102; height: 32; color: root.accent
+                      Text { anchors.centerIn: parent; text: "Install (off)"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                      MouseArea { anchors.fill: parent; enabled: !!pluginInstallEntry.text && !root.extensionLoading; onClicked: { root.extensionAction("plugin", "install", {identifier: pluginInstallEntry.text}); pluginInstallEntry.clear() } }
+                    }
+                  }
+                  Text { visible: root.extensionTab === "Plugins"; width: parent.width; height: 25; text: "Plugins run with the selected Hermes profile’s permissions. Review their source before enabling."; color: root.amber; font.pixelSize: 8; verticalAlignment: Text.AlignVCenter; leftPadding: 4; elide: Text.ElideRight }
+                  Row { visible: root.extensionTab === "Tools"; width: parent.width; height: 36; spacing: 8
+                    Text { text: "Hermes platform"; color: root.muted; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
+                    ComboBox { id: extensionPlatformPicker; width: 160; height: 32; model: ["cli", "telegram", "discord", "slack", "whatsapp", "whatsapp_cloud", "signal", "bluebubbles", "email", "homeassistant", "mattermost", "matrix", "dingtalk", "feishu", "wecom", "wecom_callback", "weixin", "qqbot", "yuanbao", "webhook", "api_server", "cron"]; currentIndex: Math.max(0, model.indexOf(root.extensionPlatform)); onActivated: { root.extensionPlatform = currentText; root.loadExtensions(root.extensionProfile, currentText) }
+                      contentItem: Text { text: extensionPlatformPicker.displayText; color: root.text; font.pixelSize: 9; verticalAlignment: Text.AlignVCenter; leftPadding: 8 }
+                      background: Rectangle { color: root.inputFill; border.color: root.border }
+                    }
+                    Text { text: "Hermes toolsets are managed separately for each profile and platform."; color: root.muted; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
+                  }
+                  Row { visible: root.extensionTab === "MCP Apps"; width: parent.width; height: 36; spacing: 7
+                    ComboBox { id: mcpTransportPicker; width: 95; height: 32; model: ["http", "stdio"]; currentIndex: 0; onActivated: root.mcpTransport = currentText; contentItem: Text { text: mcpTransportPicker.displayText === "http" ? "HTTP app" : "Local app"; color: root.text; font.pixelSize: 9; verticalAlignment: Text.AlignVCenter; leftPadding: 8 } background: Rectangle { color: root.inputFill; border.color: root.border } }
+                    TextField { id: mcpNameEntry; width: 130; height: 32; leftPadding: 8; placeholderText: "App name"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; background: Rectangle { color: root.inputFill; border.color: root.border } }
+                    ComboBox { id: mcpAuthPicker; visible: root.mcpTransport === "http"; width: 88; height: 32; model: ["none", "oauth", "header"]; contentItem: Text { text: mcpAuthPicker.displayText === "none" ? "No auth" : mcpAuthPicker.displayText; color: root.text; font.pixelSize: 9; verticalAlignment: Text.AlignVCenter; leftPadding: 7 } background: Rectangle { color: root.inputFill; border.color: root.border } }
+                    TextField { id: mcpEndpointEntry; visible: root.mcpTransport === "http"; width: Math.max(220, parent.width * (mcpAuthPicker.currentText === "header" ? .28 : .34)); height: 32; leftPadding: 8; placeholderText: "https://… MCP endpoint"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; background: Rectangle { color: root.inputFill; border.color: root.border } }
+                    TextField { id: mcpHttpKeyEntry; visible: root.mcpTransport === "http" && mcpAuthPicker.currentText === "header"; width: Math.max(160, parent.width * .2); height: 32; leftPadding: 8; echoMode: TextInput.Password; placeholderText: "Bearer token"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; background: Rectangle { color: root.inputFill; border.color: root.border } }
+                    TextField { id: mcpCommandEntry; visible: root.mcpTransport === "stdio"; width: Math.max(140, parent.width * .2); height: 32; leftPadding: 8; placeholderText: "Command"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; background: Rectangle { color: root.inputFill; border.color: root.border } }
+                    TextField { id: mcpArgsEntry; visible: root.mcpTransport === "stdio"; width: Math.max(140, parent.width * .2); height: 32; leftPadding: 8; placeholderText: "Arguments"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; background: Rectangle { color: root.inputFill; border.color: root.border } }
+                    TextField { id: mcpEnvEntry; visible: root.mcpTransport === "stdio"; width: Math.max(140, parent.width * .2); height: 32; leftPadding: 8; echoMode: TextInput.Password; placeholderText: "ENV_KEY=secret (optional)"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; background: Rectangle { color: root.inputFill; border.color: root.border } }
+                    Rectangle { width: 70; height: 32; color: root.accent
+                      Text { anchors.centerIn: parent; text: "Add app"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                      MouseArea { anchors.fill: parent; enabled: !!mcpNameEntry.text && !root.extensionLoading; onClicked: { var d = {name:mcpNameEntry.text, transport:root.mcpTransport}; if (root.mcpTransport === "http") { d.url = mcpEndpointEntry.text; if (mcpAuthPicker.currentText !== "none") d.auth = mcpAuthPicker.currentText; if (mcpAuthPicker.currentText === "header") d.api_key = mcpHttpKeyEntry.text } else { d.command = mcpCommandEntry.text; d.args = mcpArgsEntry.text; var raw = mcpEnvEntry.text; var eq = raw.indexOf("="); if (eq > 0) { var env = {}; env[raw.slice(0,eq).trim()] = raw.slice(eq+1); d.env = env } }; root.extensionAction("mcp", "add", d); mcpNameEntry.clear(); mcpEndpointEntry.clear(); mcpHttpKeyEntry.clear(); mcpCommandEntry.clear(); mcpArgsEntry.clear(); mcpEnvEntry.clear() } }
+                    }
+                  }
+                  Repeater { model: root.extensionTab === "Plugins" ? root.extensionPlugins.filter(function(p){var q=root.extensionSearch.toLowerCase();return !q || String(p.name+" "+(p.description||"")).toLowerCase().indexOf(q)>=0}) : []
+                    delegate: Rectangle { required property var modelData; width: extensionContent.width; height: 72; color: root.surface; border.color: root.border
+                      Column { anchors.left: parent.left; anchors.right: pluginActions.left; anchors.verticalCenter: parent.verticalCenter; anchors.leftMargin: 10; anchors.rightMargin: 8; spacing: 4
+                        Row { spacing: 8; Text { text: modelData.name; color: root.text; font.pixelSize: 10; font.bold: true } Text { text: (modelData.source || "bundled") + (modelData.version ? " · " + modelData.version : ""); color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter } }
+                        Text { width: parent.width; text: modelData.description || modelData.summary || "Hermes profile plugin"; color: root.muted; font.pixelSize: 9; elide: Text.ElideRight }
+                      }
+                      Row { id: pluginActions; anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 5
+                        Rectangle { width: 72; height: 27; color: modelData.enabled ? root.selectedFill : root.raised; border.color: root.border
+                          Text { anchors.centerIn: parent; text: modelData.enabled ? "Enabled" : "Enable"; color: modelData.enabled ? "#fff" : root.text; font.pixelSize: 8 }
+                          MouseArea { anchors.fill: parent; onClicked: root.extensionAction("plugin", "toggle", {name:modelData.name, enabled:!modelData.enabled, allow_tool_override:root.allowPluginToolOverride}) }
+                        }
+                        Rectangle { width: 52; height: 27; visible: modelData.source === "git" || modelData.source === "user"; color: root.raised; border.color: root.border
+                          Text { anchors.centerIn: parent; text: "Update"; color: root.text; font.pixelSize: 8 }
+                          MouseArea { anchors.fill: parent; onClicked: root.extensionAction("plugin", "update", {name:modelData.name}) }
+                        }
+                        Rectangle { width: 56; height: 27; visible: modelData.source === "git" || modelData.source === "user"; color: root.raised; border.color: root.border
+                          Text { anchors.centerIn: parent; text: "Remove"; color: root.red; font.pixelSize: 8 }
+                          MouseArea { anchors.fill: parent; onClicked: root.extensionAction("plugin", "remove", {name:modelData.name}) }
+                        }
+                      }
+                    }
+                  }
+                  Repeater { model: root.extensionTab === "Tools" ? root.extensionTools : []
+                    delegate: Rectangle { required property var modelData; width: extensionContent.width; height: 48; color: root.surface; border.color: root.border
+                      Column { anchors.left: parent.left; anchors.leftMargin: 10; anchors.right: toolAction.left; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 3
+                        Text { text: modelData.name; color: root.text; font.pixelSize: 10; font.bold: true }
+                        Text { text: modelData.description; color: root.muted; font.pixelSize: 8; elide: Text.ElideRight; width: parent.width }
+                      }
+                      Rectangle { id: toolAction; anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; width: 76; height: 27; color: modelData.enabled ? root.selectedFill : root.raised; border.color: root.border
+                        Text { anchors.centerIn: parent; text: modelData.enabled ? "Disable" : "Enable"; color: modelData.enabled ? "#fff" : root.text; font.pixelSize: 8 }
+                        MouseArea { anchors.fill: parent; onClicked: root.extensionAction("tool", "toggle", {name:modelData.name, enabled:!modelData.enabled, platform:root.extensionPlatform}) }
+                      }
+                    }
+                  }
+                  Row { visible: root.extensionTab === "MCP Apps"; width: parent.width; height: 24; spacing: 8
+                    Text { text: "CONFIGURED APPS"; color: root.muted; font.pixelSize: 8; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                    Item { width: 1; height: 1; Layout.fillWidth: true }
+                    Text { text: "Install from Hermes catalog:"; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
+                    ComboBox { id: mcpCatalogPicker; width: 190; height: 24; model: root.extensionMcpCatalog.map(function(e){return e.name}); contentItem: Text { text: mcpCatalogPicker.displayText; color: root.text; font.pixelSize: 8; verticalAlignment: Text.AlignVCenter; leftPadding: 6 } background: Rectangle { color: root.inputFill; border.color: root.border } }
+                    Rectangle { width: 66; height: 24; color: root.raised; border.color: root.border
+                      Text { anchors.centerIn: parent; text: "Install"; color: root.accent; font.pixelSize: 8 }
+                      MouseArea { anchors.fill: parent; enabled: mcpCatalogPicker.currentIndex >= 0 && mcpCatalogPicker.count > 0; onClicked: root.extensionAction("mcp", "catalog", {name:mcpCatalogPicker.currentText}) }
+                    }
+                  }
+                  Repeater { model: root.extensionTab === "MCP Apps" ? root.extensionMcpServers : []
+                    delegate: Rectangle { required property var modelData; width: extensionContent.width; height: 60; color: root.surface; border.color: root.border
+                      Column { anchors.left: parent.left; anchors.leftMargin: 10; anchors.right: mcpActions.left; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 4
+                        Text { text: modelData.name + " · " + modelData.transport; color: root.text; font.pixelSize: 10; font.bold: true }
+                        Text { text: modelData.transport === "http" ? ((modelData.endpoint_host || "remote endpoint") + " · credential names: " + ((modelData.env_names || []).concat(modelData.header_names || []).join(", ") || "none")) : (modelData.command + " · " + modelData.args_count + " arguments · environment: " + ((modelData.env_names || []).join(", ") || "none")); color: root.muted; font.pixelSize: 8; elide: Text.ElideRight; width: parent.width }
+                      }
+                      Row { id: mcpActions; anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter; spacing: 5
+                        Rectangle { width: 48; height: 26; color: root.raised; border.color: root.border
+                          Text { anchors.centerIn: parent; text: "Test"; color: root.accent; font.pixelSize: 8 }
+                          MouseArea { anchors.fill: parent; onClicked: root.extensionAction("mcp", "test", {name:modelData.name}) }
+                        }
+                        Rectangle { width: 55; height: 26; color: root.raised; border.color: root.border
+                          Text { anchors.centerIn: parent; text: "Remove"; color: root.red; font.pixelSize: 8 }
+                          MouseArea { anchors.fill: parent; onClicked: root.extensionAction("mcp", "remove", {name:modelData.name}) }
+                        }
+                      }
+                    }
+                  }
+                  Text { visible: !root.extensionLoading && ((root.extensionTab === "Plugins" && root.extensionPlugins.length === 0) || (root.extensionTab === "Tools" && root.extensionTools.length === 0) || (root.extensionTab === "MCP Apps" && root.extensionMcpServers.length === 0)); width: parent.width; height: 50; text: root.extensionTab === "Plugins" ? "No plugins are available for this profile." : root.extensionTab === "Tools" ? "Hermes did not return toolsets for this platform." : "No MCP apps configured yet. Add one above or install from the catalog."; color: root.muted; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+              }
             }
 
             // KANBAN: six readable lanes with compact task summaries
@@ -1653,9 +1858,9 @@ ShellRoot {
                     Text { text: root.selectedManagedProvider + "  ·  " + root.providerStatus(root.providerEntry(root.selectedManagedProvider)); color: root.accent; font.pixelSize: 9 }
                   }
                   Item { width: Math.max(0, parent.width - 280); height: 1 }
-                  Rectangle { visible: root.selectedManagedProvider === "openrouter"; width: 116; height: 34; radius: 2; color: root.accent
+                  Rectangle { width: 116; height: 34; radius: 2; color: root.accent
                     Text { anchors.centerIn: parent; text: "Browse models"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
-                    MouseArea { anchors.fill: parent; onClicked: { root.showModels = true; if (!root.modelCatalog.length) root.loadModelCatalog(false) } }
+                    MouseArea { anchors.fill: parent; onClicked: root.openModelCatalog(root.selectedManagedProvider, root.providerManagerProfile, root.selectedManagedProvider === "custom" ? providerManagerBaseUrl.text : "") }
                   }
                 }
                 Text { text: root.providerEntry(root.selectedManagedProvider).description || root.providerDescription(); color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; width: parent.width; height: 34 }
@@ -1704,17 +1909,17 @@ ShellRoot {
         }
       }
 
-      // OpenRouter model catalog
+      // Provider-aware model catalog
       Rectangle { anchors.fill: parent; visible: root.showModels; color: "#99070b10"; z: 40
         MouseArea { anchors.fill: parent; onClicked: {} }
         Rectangle { width: Math.min(1120, parent.width - 24); height: Math.min(790, parent.height - 24); radius: 2; color: root.surface; border.color: "#7f9db9"; anchors.centerIn: parent
-          XpTitleBar { z: 2; anchors.top: parent.top; width: parent.width; caption: "OpenRouter Model Catalog"; darkMode: root.darkMode; onCloseRequested: root.showModels = false }
+          XpTitleBar { z: 2; anchors.top: parent.top; width: parent.width; caption: root.catalogProviderName() + " Model Catalog"; darkMode: root.darkMode; onCloseRequested: root.showModels = false }
           MouseArea { anchors.fill: parent }
           Column { anchors.fill: parent; anchors.margins: 22; anchors.topMargin: 50; spacing: 8
             Row { width: parent.width; height: 44
               Column { id: catalogHeading; spacing: 4
-                Text { text: "OpenRouter model catalog"; color: root.text; font.pixelSize: 18; font.bold: true }
-                Text { text: root.modelCatalogLoading ? "Fetching live catalog…" : root.modelCatalog.length + " models · " + (root.modelCatalogStale ? "cached, refresh failed" : root.modelCatalogSource === "live" ? "live catalog" : "cached catalog") + (root.modelCatalogFetchedAt ? " · updated " + new Date(root.modelCatalogFetchedAt * 1000).toLocaleString() : ""); color: root.muted; font.pixelSize: 9 }
+                Text { text: root.catalogProviderName() + " model catalog"; color: root.text; font.pixelSize: 18; font.bold: true }
+                Text { text: root.modelCatalogLoading ? "Loading " + root.catalogProviderName() + " models…" : root.modelCatalog.length + " models · " + (root.modelCatalogStale ? "cached, refresh failed" : root.modelCatalogSource === "live" ? "live catalog" : root.modelCatalogSource === "cache" ? "cached catalog" : root.modelCatalogSource) + (root.modelCatalogFetchedAt ? " · updated " + new Date(root.modelCatalogFetchedAt * 1000).toLocaleString() : ""); color: root.muted; font.pixelSize: 9 }
               }
               Item { width: Math.max(0, parent.width - catalogHeading.implicitWidth - 88 - 24); height: 1 }
               Rectangle { width: 88; height: 34; radius: 2; color: root.raised; border.color: root.border
@@ -1724,13 +1929,14 @@ ShellRoot {
               Item { width: 24; height: 20 }
             }
             Row { width: parent.width; height: 38; spacing: 8
-              TextField { leftPadding: 10; rightPadding: 10; id: modelSearch; width: 310; height: 36; color: root.text; font.pixelSize: 10; placeholderText: "Search model, creator, capability…"; placeholderTextColor: root.muted; onTextChanged: root.catalogVisibleLimit = 100; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              ComboBox { id: catalogPublisherFilter; width: 150; height: 36; model: root.catalogPublishers; contentItem: Text { text: catalogPublisherFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              ComboBox { id: modelUseFilter; width: 145; height: 36; model: ["All uses", "Favorites", "Text & chat", "Coding", "Vision", "Image generation", "Audio", "Video", "Embeddings", "Reranking", "Decision", "Files & documents", "Other"]; contentItem: Text { text: modelUseFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: catalogProviderInput; width: 170; height: 36; model: root.modelProviders; textRole: "label"; valueRole: "id"; currentIndex: Math.max(0, root.providerIndex(root.modelCatalogProvider)); onActivated: root.loadModelCatalog(false, currentValue, root.modelCatalogProfile, currentValue === "custom" ? root.modelCatalogBaseUrl : ""); contentItem: Text { text: catalogProviderInput.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              TextField { leftPadding: 10; rightPadding: 10; id: modelSearch; width: 290; height: 36; color: root.text; font.pixelSize: 10; placeholderText: "Search model, creator, capability…"; placeholderTextColor: root.muted; onTextChanged: root.catalogVisibleLimit = 100; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: catalogPublisherFilter; width: 135; height: 36; model: root.catalogPublishers; contentItem: Text { text: catalogPublisherFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: modelUseFilter; width: 135; height: 36; model: ["All uses", "Favorites", "Text & chat", "Coding", "Vision", "Image generation", "Audio", "Video", "Embeddings", "Reranking", "Decision", "Files & documents", "Other"]; contentItem: Text { text: modelUseFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             }
             Row { width: parent.width; height: 36; spacing: 8
               ComboBox { id: catalogGroupBy; width: 150; height: 34; model: ["Group: use", "Group: creator", "Group: input cost", "Group: output cost", "Group: context", "Group: modality"]; contentItem: Text { text: catalogGroupBy.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              ComboBox { id: catalogSort; width: 205; height: 34; model: ["OpenRouter order", "Name · A to Z", "Newest first", "Input · low to high", "Output · low to high", "Average cost · low to high", "Context · high to low", "Input · high to low", "Output · high to low"]; contentItem: Text { text: catalogSort.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: catalogSort; width: 205; height: 34; model: ["Provider order", "Name · A to Z", "Newest first", "Input · low to high", "Output · low to high", "Average cost · low to high", "Context · high to low", "Input · high to low", "Output · high to low"]; contentItem: Text { text: catalogSort.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               ComboBox { id: catalogModalityFilter; width: 145; height: 34; model: ["Any modality", "Text input", "Image input", "Audio input", "Video input", "Image output", "Audio output", "Embeddings"]; contentItem: Text { text: catalogModalityFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             }
             Row { width: parent.width; height: 36; spacing: 8
@@ -1800,8 +2006,8 @@ ShellRoot {
               Text { anchors.centerIn: parent; text: "Show next 100 models · " + (root.catalogItems.length - root.catalogVisibleLimit) + " remaining"; color: root.accent; font.pixelSize: 9; font.bold: true }
               MouseArea { anchors.fill: parent; onClicked: root.catalogVisibleLimit += 100 }
             }
-            Text { visible: !root.modelCatalogLoading && root.catalogItems.length === 0; text: root.modelCatalog.length ? "No models match those filters." : "OpenRouter’s catalog is unavailable. Check your connection and refresh."; color: root.muted; font.pixelSize: 10; anchors.horizontalCenter: parent.horizontalCenter }
-            Text { text: "Sample estimate uses " + root.samplePromptTokens + " input + " + root.sampleCompletionTokens + " output tokens. Published OpenRouter list prices are per million tokens; image/request charges may differ."; color: "#667783"; font.pixelSize: 8; wrapMode: Text.WordWrap; width: parent.width }
+            Text { visible: !root.modelCatalogLoading && root.catalogItems.length === 0; text: root.modelCatalogError || (root.modelCatalog.length ? "No models match those filters." : "No model catalog is available for " + root.catalogProviderName() + ". Check provider credentials and refresh."); color: root.muted; font.pixelSize: 10; anchors.horizontalCenter: parent.horizontalCenter }
+            Text { text: "Sample estimate uses " + root.samplePromptTokens + " input + " + root.sampleCompletionTokens + " output tokens. " + (root.modelCatalogProvider === "openrouter" ? "Published OpenRouter list prices are per million tokens; image/request charges may differ." : "A dash means this provider did not publish pricing or context details in Hermes' model list."); color: "#667783"; font.pixelSize: 8; wrapMode: Text.WordWrap; width: parent.width }
           }
         }
       }
