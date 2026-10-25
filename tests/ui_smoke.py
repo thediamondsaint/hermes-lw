@@ -379,7 +379,7 @@ def main():
                 source = source.replace('            id: shell; anchors.fill: parent; padding: 0', '            id: shell; anchors.fill: parent; padding: 0\n' + tests, 1)
                 source = source.replace('implicitWidth: 1180; implicitHeight: 800', 'implicitWidth: 1000; implicitHeight: 760')
             (target / "Main.qml").write_text(source)
-            child = subprocess.Popen(["qs", "-p", str(target / "Main.qml")], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            child = subprocess.Popen(["qs", "-n", "-p", str(target / "Main.qml")], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             tiled = False
             deadline = time.monotonic() + 12
             while not virtual and child.poll() is None and time.monotonic() < deadline:
@@ -390,12 +390,39 @@ def main():
                     break
                 time.sleep(.05)
             if not virtual:
-                child.terminate()
-                stdout, stderr = child.communicate(timeout=10)
                 if not tiled:
+                    child.terminate()
+                    stdout, stderr = child.communicate(timeout=10)
                     print(stdout + stderr)
                     raise SystemExit("The fixture was not tiled on desktop 4")
+                for attempt in range(2):
+                    if attempt:
+                        child = subprocess.Popen(["qs", "-n", "-p", str(target / "Main.qml")], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                        window = None
+                        deadline = time.monotonic() + 12
+                        while child.poll() is None and time.monotonic() < deadline:
+                            clients = json.loads(subprocess.check_output(["hyprctl", "clients", "-j"], text=True))
+                            window = next((c for c in clients if c.get("pid") == child.pid), None)
+                            if window and not window.get("floating", True) and window.get("workspace", {}).get("id") == 4:
+                                break
+                            time.sleep(.05)
+                        if not window:
+                            child.terminate()
+                            stdout, stderr = child.communicate(timeout=5)
+                            print(stdout + stderr)
+                            raise SystemExit("Closing the fixture prevented its next single-instance launch")
+                    selector = json.dumps("address:" + window["address"])
+                    subprocess.run(["hyprctl", "eval", f"hl.dispatch(hl.dsp.window.close({{window={selector}}}))"], check=True, capture_output=True)
+                    try:
+                        stdout, stderr = child.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        child.kill(); stdout, stderr = child.communicate(); print(stdout + stderr)
+                        raise SystemExit("Window-manager close left a headless Quickshell instance running")
+                    if child.returncode:
+                        print(stdout + stderr)
+                        raise SystemExit("The fixture failed while closing")
                 print("TILED_UI: floating=false workspace=4")
+                print("CLOSE_REOPEN: compositor close exits cleanly; single-instance relaunch succeeds")
             else:
                 try:
                     stdout, stderr = child.communicate(timeout=100)

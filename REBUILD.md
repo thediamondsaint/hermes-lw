@@ -29,3 +29,7 @@ A short Wayland fixture verifies normal tiling on desktop 4. Interaction tests r
 - Pause is an assignment policy, not worker cancellation. External Hermes clients can bypass this app’s metadata.
 - The simplified interface does not carry forward the separate dashboard/Task Advisor, raw JSON editor or bulk task-action toolbar. The backend and existing stored data are retained. Core model advice is in Models → Ask AI; profile generation is in the profile form.
 - Real SSH hosts, HTTPS gateways, plugin installations and paid inference require environment-specific checks; fixtures verify request routing without contacting them.
+
+## Close/reopen follow-up
+
+Hyprland closing the window left the Quickshell shell process running without a window. The single-instance launcher then refused to open another UI. Hermes LW now exits on Quickshell’s last-window-closed signal. The UI suite closes the fixture through the compositor and successfully relaunches the same configuration twice before running the interaction checks.

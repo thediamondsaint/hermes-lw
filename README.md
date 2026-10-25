@@ -69,6 +69,6 @@ python tests/cli_generation_smoke.py
 python tests/ui_smoke.py
 ```
 
-The CLI smoke test uses the actual installed Hermes CLI against a disposable local streaming provider with fake credentials. The UI suite first verifies a tiled fixture on desktop 4, then clicks native controls on an isolated Xvfb display so Qt actually renders their layouts. It needs Quickshell, QtTest, Xvfb and `xvfb-run`. `--capture` also writes synthetic screenshots to `/tmp/hermes-rebuilt-*.png` and needs ImageMagick. No test uses real provider keys or sends paid model requests.
+The CLI smoke test uses the actual installed Hermes CLI against a disposable local streaming provider with fake credentials. The UI suite verifies desktop-4 tiling and two compositor-close/single-instance-reopen cycles, then clicks native controls on an isolated Xvfb display so Qt actually renders their layouts. It needs Quickshell, QtTest, Xvfb and `xvfb-run`. `--capture` also writes synthetic screenshots to `/tmp/hermes-rebuilt-*.png` and needs ImageMagick. No test uses real provider keys or sends paid model requests.
 
 The production backend listens on `127.0.0.1:18731`. Startup diagnostics: `~/.cache/hermes-control/backend.log`. Keys and connection credentials are stored in owner-only local files, never in the repository or returned as secret values to the UI.

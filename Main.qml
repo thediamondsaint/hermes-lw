@@ -6,6 +6,12 @@ import "ui"
 
 ShellRoot {
     id: root
+    // Quickshell is normally a long-running desktop shell. This app must exit
+    // when the compositor closes its last window, or -n blocks future launches.
+    Connections {
+        target: Quickshell
+        function onLastWindowClosed() { Qt.quit() }
+    }
     AppState { id: app }
     Component.onCompleted: app.initialize()
     FloatingWindow {
