@@ -2115,10 +2115,10 @@ ShellRoot {
               Text { id: generatedSoulLabel; text: "GENERATED SOUL.md"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.8; anchors.verticalCenter: parent.verticalCenter }
               ComboBox { id: personalityGeneratorPicker; width: 156; height: 30; model: root.profiles.map(function(p) { return p.slug + " · " + p.model }); currentIndex: Math.max(0, root.profiles.map(function(p) { return p.slug }).indexOf(root.personalityGeneratorProfile)); onActivated: if (root.profiles[currentIndex]) root.personalityGeneratorProfile = root.profiles[currentIndex].slug; contentItem: Text { text: personalityGeneratorPicker.displayText || "default"; color: root.text; font.pixelSize: 8; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 7; rightPadding: 15 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               Item { width: Math.max(0, parent.width - generatedSoulLabel.implicitWidth - 156 - 145 - 24); height: 1 }
-              Rectangle { width: 145; height: 30; radius: 2; color: root.selectedFill; border.color: root.border
-                Text { anchors.centerIn: parent; text: root.generatingPersonality ? "Generating…" : "✦ Generate from name"; color: root.blue; font.pixelSize: 8; font.bold: true }
-                MouseArea { id: generateSoulHover; anchors.fill: parent; enabled: !root.generatingPersonality; hoverEnabled: true; onClicked: root.generatePersonality() }
-                ToolTip.visible: generateSoulHover.containsMouse; ToolTip.text: "Uses one request with the selected profile’s model and provider. Normal provider charges apply."
+              Button { id: generateSoulButton; width: 145; height: 30; enabled: !root.generatingPersonality; text: root.generatingPersonality ? "Generating…" : "✦ Generate from name"; onClicked: root.generatePersonality()
+                contentItem: Text { text: generateSoulButton.text; color: root.blue; font.pixelSize: 8; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
+                background: Rectangle { radius: 2; color: root.selectedFill; border.color: root.border }
+                ToolTip.visible: hovered; ToolTip.text: "Uses one request with the selected profile’s model and provider. Normal provider charges apply."
               }
             }
             TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: generatedSoul; width: parent.width; height: 180; enabled: !root.generatingPersonality; color: root.text; font.pixelSize: 9; wrapMode: TextEdit.Wrap; selectByMouse: true; placeholderText: "Generate a profile personality from its ID and role, or write one here…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
