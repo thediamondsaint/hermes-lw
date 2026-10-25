@@ -1522,7 +1522,10 @@ Role and specialty requested by the user: {inferred_role}
 """
         # Root-level `-z` seeds an interactive chat. Use chat's one-shot query
         # mode so this request returns the generated file on stdout without a TTY.
-        completed = run_profile_hermes(source, ["chat", "-q", prompt, "-Q", "--source", "tool"], timeout=180)
+        try:
+            completed = run_profile_hermes(source, ["chat", "-q", prompt, "-Q", "--source", "tool"], timeout=180)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("The selected profile’s Hermes model did not respond within 180 seconds. Check its provider, model, and network settings, then try again.") from exc
         if completed.returncode:
             detail = (completed.stderr or completed.stdout or "Hermes exited without an error message").strip()
             raise RuntimeError("Could not generate the personality: " + detail[-1200:])

@@ -47,6 +47,7 @@ ShellRoot {
   property bool showCreateProfile: false
   property bool showDeleteProfile: false
   property bool generatingPersonality: false
+  property string personalityGenerationStatus: ""
   property string personalityGeneratorProfile: "default"
   property bool showPromptEditor: false
   property var editingPrompt: null
@@ -959,21 +960,27 @@ ShellRoot {
   function openCreateProfileDialog() {
     root.showCreateProfile = true
     root.generatingPersonality = false
+    root.personalityGenerationStatus = ""
     newProfileSlug.text = ""; newProfileRole.text = ""; generatedSoul.text = ""; newProfileKey.text = ""
     cloneMode.currentIndex = 0; cloneSource.currentIndex = 0; copyApiKey.checked = false
     root.personalityGeneratorProfile = root.profiles.some(function(p) { return p.slug === root.selectedProfile }) ? root.selectedProfile : "default"
   }
   function generatePersonality() {
-    if (!newProfileSlug.text.trim()) { root.notice = "Enter a profile name before generating its prompt"; return }
-    if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,39}$/.test(newProfileSlug.text.trim())) { root.notice = "Use a profile ID with letters, numbers, and hyphens"; return }
+    if (!newProfileSlug.text.trim()) { root.personalityGenerationStatus = "Enter a profile ID above before generating its personality."; root.notice = root.personalityGenerationStatus; return }
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,39}$/.test(newProfileSlug.text.trim())) { root.personalityGenerationStatus = "Use a profile ID with letters, numbers, and hyphens."; root.notice = root.personalityGenerationStatus; return }
+    var generator = root.personalityGeneratorProfile || "default"
+    var generatorInfo = root.profileBySlug(generator)
     root.generatingPersonality = true
-    root.request("POST", "/api/profile/generate", {name: newProfileSlug.text, role: newProfileRole.text, generator_profile: root.personalityGeneratorProfile}, function(d) {
+    root.personalityGenerationStatus = "Request sent to " + generator + (generatorInfo.model ? " · " + generatorInfo.model : "") + ". Waiting for the model response… This uses one model request."
+    root.request("POST", "/api/profile/generate", {name: newProfileSlug.text, role: newProfileRole.text, generator_profile: generator}, function(d) {
       root.generatingPersonality = false
       generatedSoul.text = d.personality || ""
+      root.personalityGenerationStatus = generatedSoul.text ? "Personality generated with " + (d.generator_profile || generator) + ". Review or edit it below before creating the profile." : "Hermes returned an empty response. Check the selected profile’s model and provider settings."
       root.notice = "Personality generated with " + (d.generator_profile || root.personalityGeneratorProfile) + " · review it before creating"
     }, function(error) {
       root.generatingPersonality = false
-      root.notice = error.error || "Could not generate the personality"
+      root.personalityGenerationStatus = "Generation failed: " + (error.error || "No response from Hermes LW")
+      root.notice = root.personalityGenerationStatus
     }, 190000)
   }
   function profileControl(action) {
@@ -2121,7 +2128,8 @@ ShellRoot {
                 ToolTip.visible: hovered; ToolTip.text: "Uses one request with the selected profile’s model and provider. Normal provider charges apply."
               }
             }
-            TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: generatedSoul; width: parent.width; height: 180; enabled: !root.generatingPersonality; color: root.text; font.pixelSize: 9; wrapMode: TextEdit.Wrap; selectByMouse: true; placeholderText: "Generate a profile personality from its ID and role, or write one here…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            Text { visible: root.personalityGenerationStatus.length > 0; text: root.personalityGenerationStatus; width: parent.width; height: visible ? (root.generatingPersonality ? 34 : 52) : 0; color: root.generatingPersonality ? root.blue : (text.indexOf("Generation failed:") === 0 || text.indexOf("empty response") >= 0 ? "#d86b62" : root.muted); font.pixelSize: 8; wrapMode: Text.WordWrap; verticalAlignment: Text.AlignVCenter; maximumLineCount: 4 }
+            TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: generatedSoul; width: parent.width; height: 145; enabled: !root.generatingPersonality; color: root.text; font.pixelSize: 9; wrapMode: TextEdit.Wrap; selectByMouse: true; placeholderText: "Generated personality appears here. You can also write or edit it before creating the profile."; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Row { width: parent.width; height: 36; spacing: 9
               Rectangle { width: 120; height: 36; radius: 2; color: root.generatingPersonality ? root.border : root.accent
                 Text { anchors.centerIn: parent; text: root.generatingPersonality ? "Please wait…" : "Create profile"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
