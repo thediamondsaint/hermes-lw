@@ -36,4 +36,4 @@ This pass addresses the 25 listed issues. Further work could add drag-and-drop s
 
 ## Live-window correction
 
-The first desktop review exposed a layout issue that static inspection missed: fixed-width catalog filter rows overflowed the 1200×760 Quickshell window, pushing controls offscreen. The catalog now uses compact separate rows, and the top toolbar has an always-visible **Options** button for backend settings. The updated catalog screenshot is cropped to the catalog itself so it contains no local profile or board data.
+The first desktop review exposed a layout issue that static inspection missed: fixed-width catalog filter rows overflowed the 1200×760 Quickshell window, pushing controls offscreen. The catalog now uses compact separate rows. The top toolbar and sidebar **Options** entries now open a distinct app-wide settings page; profile-specific settings remain under **Models & Providers**. The updated catalog screenshot is cropped to the catalog itself so it contains no local profile or board data.

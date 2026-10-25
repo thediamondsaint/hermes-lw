@@ -455,6 +455,24 @@ ShellRoot {
       root.currentBoard = slug; root.page = "Kanban"; root.statusFilterValue = "all"; root.assigneeFilterValue = "all"; root.selectedTaskIds = []; root.selectedTask = null; root.refresh(slug)
     })
   }
+  function setManagerProfile(slug) {
+    var target = slug || root.managerProfile
+    if (!target) return
+    request("POST", "/api/profile/manage", {slug: target, action: "manager"}, function(data) {
+      root.managerProfile = data.manager_profile || ""
+      root.notice = root.managerProfile ? "Hermes LW manager: " + root.managerProfile : "Manager profile cleared"
+      root.refresh()
+    })
+  }
+  function setStartupBoard(slug) {
+    request("POST", "/api/project/select", {slug: slug}, function() {
+      root.currentBoard = slug
+      root.selectedTask = null
+      root.selectedTaskIds = []
+      root.refresh(slug)
+      root.notice = "Startup board set to " + slug
+    })
+  }
   function editProject(project) {
     root.editingProject = project || null
     projectName.text = project ? project.name : ""
@@ -623,6 +641,7 @@ ShellRoot {
   Shortcut { sequence: "Ctrl+4"; onActivated: root.page = "Kanban" }
   Shortcut { sequence: "Ctrl+5"; onActivated: root.page = "Prompts" }
   Shortcut { sequence: "Ctrl+6"; onActivated: root.page = "Models & Providers" }
+  Shortcut { sequence: "Ctrl+7"; onActivated: root.page = "Options" }
   Shortcut { sequence: "Escape"; enabled: root.showModels || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor; onActivated: root.closeTopDialog() }
   Timer { interval: 10000; running: root.pendingRequests === 0 && !root.modalOpen(); repeat: true; onTriggered: root.refresh() }
   Component.onCompleted: { root.refresh(); root.loadModelProviders() }
@@ -673,7 +692,7 @@ ShellRoot {
                   else if (index === 2) { root.showCreateProfile = true; newProfileSlug.text = ""; newProfileRole.text = ""; generatedSoul.text = ""; newProfileKey.text = "" }
                   else if (index === 3) { root.showModels = true; if (!root.modelCatalog.length) root.loadModelCatalog(false) }
                   else if (index === 4) root.refresh()
-                  else root.page = "Models & Providers"
+                  else root.page = "Options"
                 } }
               }
             }
@@ -711,10 +730,10 @@ ShellRoot {
                 }
               }
               Rectangle { width: parent.width; height: 1; color: root.border }
-              Repeater { model: ["Overview", "Projects", "Models & Providers", "Profiles", "Kanban", "Prompts"]
+              Repeater { model: ["Overview", "Projects", "Models & Providers", "Profiles", "Kanban", "Prompts", "Options"]
                 delegate: Rectangle { required property string modelData; width: parent.width; height: 25; color: root.page === modelData ? root.selectedFill : "transparent"; border.color: root.page === modelData ? root.blue : "transparent"
                   Row { anchors.fill: parent; anchors.leftMargin: 8; spacing: 8
-                    Text { text: modelData === "Overview" ? "⌂" : modelData === "Projects" ? "▣" : modelData === "Models & Providers" ? "⚙" : modelData === "Profiles" ? "◉" : modelData === "Kanban" ? "▦" : "✦"; color: root.page === modelData ? "#ffffff" : root.accent; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: modelData === "Overview" ? "⌂" : modelData === "Projects" ? "▣" : modelData === "Models & Providers" || modelData === "Options" ? "⚙" : modelData === "Profiles" ? "◉" : modelData === "Kanban" ? "▦" : "✦"; color: root.page === modelData ? "#ffffff" : root.accent; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
                     Text { text: modelData; color: root.page === modelData ? "#ffffff" : root.text; font.pixelSize: 10; anchors.verticalCenter: parent.verticalCenter }
                   }
                   MouseArea { anchors.fill: parent; onClicked: root.page = modelData }
@@ -758,8 +777,8 @@ ShellRoot {
               Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#0a3683" }
               Row { anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 12; spacing: 8
                 Column { anchors.verticalCenter: parent.verticalCenter; spacing: 2
-                  Text { text: root.page === "Overview" ? "Workspace" : root.page === "Projects" ? "Projects" : root.page === "Profiles" ? "Agent profiles" : root.page === "Models & Providers" ? "Models & Providers" : root.page === "Kanban" ? "Task board" : "Prompt library"; color: "#ffffff"; font.pixelSize: 14; font.bold: true }
-                  Text { text: root.page === "Kanban" ? (root.projectInfo.name || "Default") + "  ·  " + root.tasks.length + " tasks" : root.page === "Models & Providers" ? "Choose a backend, model, and profile credentials" : "Hermes LW"; color: "#e5efff"; font.pixelSize: 8 }
+                  Text { text: root.page === "Overview" ? "Workspace" : root.page === "Projects" ? "Projects" : root.page === "Profiles" ? "Agent profiles" : root.page === "Models & Providers" ? "Models & Providers" : root.page === "Options" ? "Options" : root.page === "Kanban" ? "Task board" : "Prompt library"; color: "#ffffff"; font.pixelSize: 14; font.bold: true }
+                  Text { text: root.page === "Kanban" ? (root.projectInfo.name || "Default") + "  ·  " + root.tasks.length + " tasks" : root.page === "Models & Providers" ? "Choose a backend, model, and profile credentials" : root.page === "Options" ? "App-wide Hermes LW settings" : "Hermes LW"; color: "#e5efff"; font.pixelSize: 8 }
                 }
                 Item { width: Math.max(1, parent.width - 330); height: 1 }
                 Text { text: root.managerProfile ? "Manager: " + root.managerProfile : "No manager selected"; color: "#ffffff"; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter; MouseArea { anchors.fill: parent; onClicked: root.page = "Profiles" } }
@@ -1002,6 +1021,65 @@ ShellRoot {
                   TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: advancedInput; width: parent.width; height: root.advancedMode ? parent.height * 0.40 : 0; visible: root.advancedMode; color: root.text; font.family: "monospace"; font.pixelSize: 9; wrapMode: TextEdit.NoWrap; selectByMouse: true; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                 }
               }
+            }
+
+            // OPTIONS: app-wide settings, separate from per-profile configuration
+            Column { anchors.fill: parent; anchors.margins: 22; spacing: 12; visible: root.page === "Options"
+              Row { width: parent.width; height: 48; spacing: 10
+                Column { spacing: 4
+                  Text { text: "Application options"; color: root.text; font.pixelSize: 17; font.bold: true }
+                  Text { text: "Global Hermes LW preferences and connection status"; color: root.muted; font.pixelSize: 9 }
+                }
+              }
+              Row { width: parent.width; height: 168; spacing: 12
+                Rectangle { width: (parent.width - 12) / 2; height: parent.height; color: root.surface; border.color: root.border
+                  Column { anchors.fill: parent; anchors.margins: 14; spacing: 10
+                    Text { text: "HERMES CONNECTION"; color: root.blue; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.8 }
+                    Text { text: root.backendConnected ? "Connected to local Hermes LW service" : "Hermes LW service is disconnected"; color: root.backendConnected ? root.accent : root.red; font.pixelSize: 12; font.bold: true }
+                    Text { text: "http://127.0.0.1:18731  ·  local-only control API"; color: root.muted; font.pixelSize: 9 }
+                    Text { text: "Provider credentials and model selection are managed separately for each profile."; color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; width: parent.width }
+                    Item { width: 1; height: 1; Layout.fillHeight: true }
+                    Rectangle { width: 190; height: 34; color: root.raised; border.color: root.border
+                      Text { anchors.centerIn: parent; text: "Open Models & Providers"; color: root.accent; font.pixelSize: 9; font.bold: true }
+                      MouseArea { anchors.fill: parent; onClicked: root.page = "Models & Providers" }
+                    }
+                  }
+                }
+                Rectangle { width: (parent.width - 12) / 2; height: parent.height; color: root.surface; border.color: root.border
+                  Column { anchors.fill: parent; anchors.margins: 14; spacing: 10
+                    Text { text: "WORKSPACE DEFAULTS"; color: root.blue; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.8 }
+                    Text { text: "Startup board"; color: root.muted; font.pixelSize: 9 }
+                    ComboBox { id: optionsBoardInput; width: parent.width; height: 34; model: root.activeProjects().map(function(p) { return p.name || p.slug }); currentIndex: Math.max(0, root.activeProjects().map(function(p) { return p.slug }).indexOf(root.currentBoard)); onActivated: if (root.activeProjects()[currentIndex]) root.setStartupBoard(root.activeProjects()[currentIndex].slug); contentItem: Text { text: optionsBoardInput.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                    Text { text: "Manager profile"; color: root.muted; font.pixelSize: 9 }
+                    ComboBox { id: optionsManagerInput; width: parent.width; height: 34; model: ["No manager"].concat(root.profiles.map(function(p) { return p.slug })); currentIndex: root.managerProfile ? Math.max(0, root.profiles.map(function(p) { return p.slug }).indexOf(root.managerProfile)) + 1 : 0; onActivated: root.setManagerProfile(currentIndex === 0 ? "" : root.profiles[currentIndex - 1].slug); contentItem: Text { text: optionsManagerInput.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                  }
+                }
+              }
+              Row { width: parent.width; height: 120; spacing: 12
+                Rectangle { width: (parent.width - 12) / 2; height: parent.height; color: root.surface; border.color: root.border
+                  Column { anchors.fill: parent; anchors.margins: 14; spacing: 9
+                    Text { text: "APPEARANCE & CATALOG"; color: root.blue; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.8 }
+                    Row { width: parent.width; spacing: 10
+                      Rectangle { width: 150; height: 34; color: root.raised; border.color: root.border
+                        Text { anchors.centerIn: parent; text: "Switch to " + (root.darkMode ? "light" : "dark") + " mode"; color: root.text; font.pixelSize: 9 }
+                        MouseArea { anchors.fill: parent; onClicked: root.toggleTheme() }
+                      }
+                      Rectangle { width: 150; height: 34; color: root.raised; border.color: root.border
+                        Text { anchors.centerIn: parent; text: root.modelCatalogLoading ? "Refreshing models…" : "Refresh model catalog"; color: root.accent; font.pixelSize: 9 }
+                        MouseArea { anchors.fill: parent; enabled: !root.modelCatalogLoading; onClicked: root.loadModelCatalog(true) }
+                      }
+                    }
+                    Text { text: root.modelCatalogFetchedAt ? "Catalog updated " + new Date(root.modelCatalogFetchedAt * 1000).toLocaleString() : "Catalog has not been loaded yet"; color: root.muted; font.pixelSize: 8 }
+                  }
+                }
+                Rectangle { width: (parent.width - 12) / 2; height: parent.height; color: root.surface; border.color: root.border
+                  Column { anchors.fill: parent; anchors.margins: 14; spacing: 8
+                    Text { text: "KEYBOARD SHORTCUTS"; color: root.blue; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.8 }
+                    Text { text: "Ctrl+1–7  ·  Switch workspace pages\nCtrl+N  ·  New task\nCtrl+F  ·  Search current board or model catalog\nCtrl+R  ·  Refresh Hermes state"; color: root.text; font.pixelSize: 9; lineHeight: 1.15 }
+                  }
+                }
+              }
+              Text { text: "Profile-level provider, model, reasoning, API key, and personality settings are in Models & Providers. Theme, manager, and startup board are app-wide."; color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; width: parent.width }
             }
 
             // KANBAN: six readable lanes with compact task summaries
