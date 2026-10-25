@@ -108,6 +108,24 @@ ShellRoot {
       return ac - bc || Number(b.context_length || 0) - Number(a.context_length || 0)
     }).slice(0, 8)
   }
+  property string personalityGeneratorProvider: "auto"
+  property string personalityGenerationModel: ""
+  property string personalityModelSearch: ""
+  property var personalityModelOptions: {
+    var term = root.personalityModelSearch.trim().toLowerCase()
+    var options = []
+    var seen = {}
+    for (var i = 0; i < root.modelCatalog.length; ++i) {
+      var item = root.modelCatalog[i]
+      var id = String(item.id || "")
+      if (id && (!term || id.toLowerCase().indexOf(term) >= 0 || String(item.name || "").toLowerCase().indexOf(term) >= 0)) {
+        options.push(id)
+        seen[id] = true
+      }
+    }
+    if (root.personalityGenerationModel && !seen[root.personalityGenerationModel] && (!term || root.personalityGenerationModel.toLowerCase().indexOf(term) >= 0)) options.unshift(root.personalityGenerationModel)
+    return options
+  }
   function advisorPrompt() {
     var task = advisorProblem.text.trim() || "[Describe the problem and desired outcome]"
     var kind = advisorTaskType.currentText
@@ -962,21 +980,32 @@ ShellRoot {
     root.generatingPersonality = false
     root.personalityGenerationStatus = ""
     newProfileSlug.text = ""; newProfileRole.text = ""; generatedSoul.text = ""; newProfileKey.text = ""
-    cloneMode.currentIndex = 0; cloneSource.currentIndex = 0; copyApiKey.checked = false
-    root.personalityGeneratorProfile = root.profiles.some(function(p) { return p.slug === root.selectedProfile }) ? root.selectedProfile : "default"
+    cloneMode.currentIndex = 1
+    var defaultIndex = root.profiles.map(function(p) { return p.slug }).indexOf("default")
+    cloneSource.currentIndex = Math.max(0, defaultIndex)
+    copyApiKey.checked = false
+    root.personalityGeneratorProfile = defaultIndex >= 0 ? "default" : (root.profiles.length ? root.profiles[0].slug : "default")
+    var generatorInfo = root.profileBySlug(root.personalityGeneratorProfile)
+    root.personalityGeneratorProvider = generatorInfo.provider || "auto"
+    root.personalityGenerationModel = generatorInfo.model || ""
+    root.personalityModelSearch = ""
+    root.loadModelCatalog(false, root.personalityGeneratorProvider, root.personalityGeneratorProfile, "")
   }
   function generatePersonality() {
     if (!newProfileSlug.text.trim()) { root.personalityGenerationStatus = "Enter a profile ID above before generating its personality."; root.notice = root.personalityGenerationStatus; return }
     if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,39}$/.test(newProfileSlug.text.trim())) { root.personalityGenerationStatus = "Use a profile ID with letters, numbers, and hyphens."; root.notice = root.personalityGenerationStatus; return }
     var generator = root.personalityGeneratorProfile || "default"
-    var generatorInfo = root.profileBySlug(generator)
+    var provider = root.personalityGeneratorProvider || "auto"
+    var model = root.personalityGenerationModel.trim()
+    if (!model) { root.personalityGenerationStatus = "Choose a model for this generation."; root.notice = root.personalityGenerationStatus; return }
     root.generatingPersonality = true
-    root.personalityGenerationStatus = "Request sent to " + generator + (generatorInfo.model ? " · " + generatorInfo.model : "") + ". Waiting for the model response… This uses one model request."
-    root.request("POST", "/api/profile/generate", {name: newProfileSlug.text, role: newProfileRole.text, generator_profile: generator}, function(d) {
+    root.personalityGenerationStatus = "Sending one request via " + provider + " · " + model + " (credentials from " + generator + "). Waiting for the model response…"
+    root.request("POST", "/api/profile/generate", {name: newProfileSlug.text, role: newProfileRole.text,
+      generator_profile: generator, provider: provider, model: model}, function(d) {
       root.generatingPersonality = false
       generatedSoul.text = d.personality || ""
-      root.personalityGenerationStatus = generatedSoul.text ? "Personality generated with " + (d.generator_profile || generator) + ". Review or edit it below before creating the profile." : "Hermes returned an empty response. Check the selected profile’s model and provider settings."
-      root.notice = "Personality generated with " + (d.generator_profile || root.personalityGeneratorProfile) + " · review it before creating"
+      root.personalityGenerationStatus = generatedSoul.text ? "Generated with " + (d.provider || provider) + " · " + (d.model || model) + ". Review or edit it below before creating the profile." : "Hermes returned an empty response. Check the selected profile’s credentials and provider settings."
+      root.notice = generatedSoul.text ? "Personality generated · review it before creating" : root.personalityGenerationStatus
     }, function(error) {
       root.generatingPersonality = false
       root.personalityGenerationStatus = "Generation failed: " + (error.error || "No response from Hermes LW")
@@ -2097,7 +2126,7 @@ ShellRoot {
 
       // Create or clone a profile
       Rectangle { anchors.fill: parent; visible: root.showCreateProfile; color: "#99070b10"; z: 34; MouseArea { anchors.fill: parent; onClicked: {} }
-        Rectangle { width: 660; height: Math.min(730, parent.height - 24); radius: 2; color: root.surface; border.color: "#7f9db9"; anchors.centerIn: parent; MouseArea { anchors.fill: parent }
+        Rectangle { width: 660; height: Math.min(820, parent.height - 24); radius: 2; color: root.surface; border.color: "#7f9db9"; anchors.centerIn: parent; MouseArea { anchors.fill: parent }
           XpTitleBar { z: 2; anchors.top: parent.top; width: parent.width; caption: "Create / Clone Profile"; darkMode: root.darkMode; onCloseRequested: root.showCreateProfile = false }
           Column { anchors.fill: parent; anchors.margins: 22; anchors.topMargin: 50; spacing: 9
             Row { width: parent.width; height: 42
@@ -2115,17 +2144,41 @@ ShellRoot {
               Text { text: "CLONE FROM"; color: root.muted; font.pixelSize: 8; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
               ComboBox { id: cloneSource; width: parent.width - 110; height: 34; model: root.profiles.map(function(p){return p.slug}); currentIndex: 0; contentItem: Text { text: cloneSource.displayText; color: root.text; font.pixelSize: 9; verticalAlignment: Text.AlignVCenter; leftPadding: 10 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             }
-            CheckBox { id: copyApiKey; text: "Copy source OpenRouter key"; checked: false; enabled: cloneMode.currentIndex > 0; contentItem: Text { text: copyApiKey.text; color: root.muted; font.pixelSize: 9; leftPadding: 26; verticalAlignment: Text.AlignVCenter } }
+            CheckBox { id: copyApiKey; text: "Copy source provider API keys"; checked: false; enabled: cloneMode.currentIndex > 0; contentItem: Text { text: copyApiKey.text; color: root.muted; font.pixelSize: 9; leftPadding: 26; verticalAlignment: Text.AlignVCenter } }
             Text { text: "NEW OPENROUTER API KEY · optional"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.8 }
             TextField { leftPadding: 9; rightPadding: 9; id: newProfileKey; width: parent.width; height: 36; echoMode: TextInput.Password; color: root.text; font.pixelSize: 10; placeholderText: "Stored privately in this profile’s .env"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-            Row { width: parent.width; height: 32; spacing: 8
+            Row { width: parent.width; height: 18; spacing: 8
+              Text { text: "CREDENTIALS FROM"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.7; anchors.verticalCenter: parent.verticalCenter }
+              ComboBox { id: personalityGeneratorPicker; width: parent.width - 150; height: 30; model: root.profiles.map(function(p) { return p.slug + " · " + p.model }); currentIndex: Math.max(0, root.profiles.map(function(p) { return p.slug }).indexOf(root.personalityGeneratorProfile)); onActivated: {
+                  var profile = root.profiles[currentIndex]
+                  if (profile) { root.personalityGeneratorProfile = profile.slug; root.personalityGeneratorProvider = profile.provider || "auto"; root.personalityGenerationModel = profile.model || ""; root.personalityModelSearch = ""; root.loadModelCatalog(false, root.personalityGeneratorProvider, profile.slug, "") }
+                } contentItem: Text { text: personalityGeneratorPicker.displayText || "default"; color: root.text; font.pixelSize: 8; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 7; rightPadding: 15 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            }
+            Row { width: parent.width; height: 30; spacing: 8
+              Text { text: "PROVIDER"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.7; anchors.verticalCenter: parent.verticalCenter }
+              ComboBox { id: personalityProviderPicker; width: parent.width - 85; height: 30; model: root.modelProviders; textRole: "label"; valueRole: "id"; currentIndex: Math.max(0, root.providerIndex(root.personalityGeneratorProvider)); onActivated: { root.personalityGeneratorProvider = currentValue; root.personalityGenerationModel = ""; root.personalityModelSearch = ""; root.loadModelCatalog(false, currentValue, root.personalityGeneratorProfile, "") } contentItem: Text { text: personalityProviderPicker.displayText || root.personalityGeneratorProvider; color: root.text; font.pixelSize: 8; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 7; rightPadding: 15 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            }
+            Row { width: parent.width; height: 30; spacing: 8
+              TextField { id: personalityModelSearchInput; width: parent.width; height: 30; text: root.personalityModelSearch; onTextChanged: root.personalityModelSearch = text; color: root.text; font.pixelSize: 8; placeholderText: root.modelCatalogLoading ? "Loading models…" : "Search model IDs in " + root.personalityGeneratorProvider + " catalog…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            }
+            Row { width: parent.width; height: 30; spacing: 8
+              Text { text: "MODEL"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.7; anchors.verticalCenter: parent.verticalCenter }
+              ComboBox { id: personalityModelPicker; width: parent.width - 72; height: 30; model: root.personalityModelOptions; currentIndex: root.personalityModelOptions.indexOf(root.personalityGenerationModel); enabled: root.personalityModelOptions.length > 0 && !root.generatingPersonality; onActivated: root.personalityGenerationModel = currentText; contentItem: Text { text: personalityGenerationModel.length ? personalityGenerationModel : (root.modelCatalogLoading ? "Loading catalog…" : "Choose a model"); color: root.text; font.pixelSize: 8; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 7; rightPadding: 15 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            }
+            Text { width: parent.width; height: 24; color: root.muted; font.pixelSize: 8; wrapMode: Text.WordWrap; text: {
+                var selected = root.modelCatalog.filter(function(m) { return m.id === root.personalityGenerationModel })[0]
+                if (!selected) return root.modelCatalogLoading ? "Loading the selected provider’s models…" : "Choose a provider model. The request uses the credentials profile above."
+                if (selected.price_known === false) return "Pricing unavailable from this provider’s catalog. Check its rate card before generating."
+                var estimate = (Number(selected.input_rate || 0) * 600 + Number(selected.output_rate || 0) * 600) / 1000000
+                return "Rates / 1M tokens: input " + root.formatRate(selected.input_rate) + " · output " + root.formatRate(selected.output_rate) + " · rough request estimate " + (estimate < 0.01 ? "$" + estimate.toFixed(4) : "$" + estimate.toFixed(2)) + " (600 in / 600 out tokens). Provider charges can differ."
+              } }
+            Row { width: parent.width; height: 30; spacing: 8
               Text { id: generatedSoulLabel; text: "GENERATED SOUL.md"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.8; anchors.verticalCenter: parent.verticalCenter }
-              ComboBox { id: personalityGeneratorPicker; width: 156; height: 30; model: root.profiles.map(function(p) { return p.slug + " · " + p.model }); currentIndex: Math.max(0, root.profiles.map(function(p) { return p.slug }).indexOf(root.personalityGeneratorProfile)); onActivated: if (root.profiles[currentIndex]) root.personalityGeneratorProfile = root.profiles[currentIndex].slug; contentItem: Text { text: personalityGeneratorPicker.displayText || "default"; color: root.text; font.pixelSize: 8; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 7; rightPadding: 15 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              Item { width: Math.max(0, parent.width - generatedSoulLabel.implicitWidth - 156 - 145 - 24); height: 1 }
-              Button { id: generateSoulButton; width: 145; height: 30; enabled: !root.generatingPersonality; text: root.generatingPersonality ? "Generating…" : "✦ Generate from name"; onClicked: root.generatePersonality()
+              Item { width: Math.max(0, parent.width - generatedSoulLabel.implicitWidth - 145 - 16); height: 1 }
+              Button { id: generateSoulButton; width: 145; height: 30; enabled: !root.generatingPersonality && root.personalityGenerationModel.length > 0; text: root.generatingPersonality ? "Generating…" : "✦ Generate from name"; onClicked: root.generatePersonality()
                 contentItem: Text { text: generateSoulButton.text; color: root.blue; font.pixelSize: 8; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
                 background: Rectangle { radius: 2; color: root.selectedFill; border.color: root.border }
-                ToolTip.visible: hovered; ToolTip.text: "Uses one request with the selected profile’s model and provider. Normal provider charges apply."
+                ToolTip.visible: hovered; ToolTip.text: "Uses one request with the exact provider and model selected above. Normal provider charges apply."
               }
             }
             Text { visible: root.personalityGenerationStatus.length > 0; text: root.personalityGenerationStatus; width: parent.width; height: visible ? (root.generatingPersonality ? 34 : 52) : 0; color: root.generatingPersonality ? root.blue : (text.indexOf("Generation failed:") === 0 || text.indexOf("empty response") >= 0 ? "#d86b62" : root.muted); font.pixelSize: 8; wrapMode: Text.WordWrap; verticalAlignment: Text.AlignVCenter; maximumLineCount: 4 }
@@ -2136,7 +2189,7 @@ ShellRoot {
                 MouseArea { anchors.fill: parent; enabled: !root.generatingPersonality; onClicked: root.createProfile() }
               }
               Rectangle { width: 88; height: 36; radius: 2; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Cancel"; color: root.muted; font.pixelSize: 9 } MouseArea { anchors.fill: parent; onClicked: root.showCreateProfile = false } }
-              Text { text: "Copied OpenRouter keys are removed unless you opt in; a new key overrides the copied key."; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 225; wrapMode: Text.WordWrap }
+              Text { text: "Copied provider keys are removed unless you opt in. The new OpenRouter key field applies only to this profile."; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 225; wrapMode: Text.WordWrap }
             }
           }
         }

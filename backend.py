@@ -388,6 +388,27 @@ def update_env_key(path: Path, key_name: str, value: str | None) -> None:
     atomic_write(path, "\n".join(lines) + ("\n" if lines else ""))
 
 
+def clear_profile_credentials(slug: str) -> None:
+    """Remove copied provider secrets from a new profile unless explicitly retained."""
+    path = profile_env_path(slug)
+    if not path.exists():
+        return
+    key_names = {name for provider in installed_model_providers() for name in provider.get("env_vars", [])}
+    key_names.update({"CUSTOM_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "GH_TOKEN", "GITHUB_TOKEN"})
+    lines = []
+    for line in path.read_text().splitlines():
+        match = re.match(r"^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=", line)
+        if match and (match.group(1) in key_names or match.group(1).endswith(("_API_KEY", "_TOKEN"))):
+            continue
+        lines.append(line)
+    atomic_write(path, "\n".join(lines) + ("\n" if lines else ""))
+    config_path, _ = profile_paths(slug)
+    config = yaml.safe_load(config_path.read_text()) or {}
+    model = config.get("model") if isinstance(config.get("model"), dict) else {}
+    if model.pop("api_key", None):
+        write_profile_config(config_path, config)
+
+
 def has_env_key(path: Path, key_name: str = "OPENROUTER_API_KEY") -> bool:
     if not path.exists():
         return False
@@ -1443,7 +1464,7 @@ class Handler(BaseHTTPRequestHandler):
             if mode == "clone_all": args.append("--clone-all")
             cmd(*args, timeout=90)
             if not p.get("copy_api_key"):
-                update_env_key(profile_env_path(slug), "OPENROUTER_API_KEY", None)
+                clear_profile_credentials(slug)
         elif mode == "empty":
             cmd(*args, timeout=90)
         else:
@@ -1503,6 +1524,13 @@ class Handler(BaseHTTPRequestHandler):
         source = safe_slug(str(p.get("generator_profile", "default")))
         if source not in profile_slugs():
             raise ValueError("Choose an existing profile to generate with")
+        provider = str(p.get("provider", "")).strip().lower()
+        model = str(p.get("model", "")).strip()
+        providers = {entry["id"] for entry in installed_model_providers()}
+        if provider not in providers:
+            raise ValueError("Choose a supported provider for personality generation")
+        if not model or len(model) > 200 or model.startswith("-") or any(char.isspace() or ord(char) < 32 for char in model):
+            raise ValueError("Choose a valid model from the selected provider’s catalog")
         inferred_role = role or name.replace("-", " ")
         prompt = f"""Write the complete contents of a Hermes Agent SOUL.md file for a new profile.
 
@@ -1523,7 +1551,8 @@ Role and specialty requested by the user: {inferred_role}
         # Root-level `-z` seeds an interactive chat. Use chat's one-shot query
         # mode so this request returns the generated file on stdout without a TTY.
         try:
-            completed = run_profile_hermes(source, ["chat", "-q", prompt, "-Q", "--source", "tool"], timeout=180)
+            completed = run_profile_hermes(source, ["chat", "-q", prompt, "-Q", "--source", "tool",
+                                                     "--provider", provider, "--model", model], timeout=180)
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("The selected profile’s Hermes model did not respond within 180 seconds. Check its provider, model, and network settings, then try again.") from exc
         if completed.returncode:
@@ -1541,7 +1570,8 @@ Role and specialty requested by the user: {inferred_role}
         sections_present = sum(bool(re.search(r"^#{1,6}\s+" + re.escape(section) + r"\s*$", result, re.I | re.M)) for section in required_sections)
         if word_count < 70 or sections_present < 4:
             raise RuntimeError("Hermes returned an incomplete or unstructured personality. Check the generator profile’s model and try again.")
-        self.send_json({"ok": True, "personality": result, "generator_profile": source})
+        self.send_json({"ok": True, "personality": result, "generator_profile": source,
+                        "provider": provider, "model": model})
 
     def favorite_model(self, p):
         model_id = str(p.get("id", "")).strip()
