@@ -1,5 +1,7 @@
 # Hermes LW audit and implementation notes
 
+The latest verified audit is [25 October 2026](AUDIT-2026-10-25.md), including regression tests, confirmed fixes, and remaining execution/cost-control gaps. The notes below record earlier implementation passes.
+
 Second-pass audit of the local Quickshell client and its Python bridge. The GitHub projects below were reviewed for working patterns; the notes describe what Hermes LW adopted or adapted. These links are references, not copied code.
 
 | # | Audit finding | GitHub reference and pattern | Implemented in Hermes LW |

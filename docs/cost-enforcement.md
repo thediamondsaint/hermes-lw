@@ -30,7 +30,7 @@ The community repo [hermes-cost-control](https://github.com/Antoine130676/hermes
 
 ## Safe current behavior in Hermes LW
 
-- New tasks start with no allowed profiles; every profile must be checked explicitly.
+- New tasks start with no allowed profiles; every profile must be checked explicitly. An unassigned task is created Blocked. Promote/Unblock require an explicitly assigned approved profile, and an existing task must be blocked before its assignee can be removed.
 - The app rejects assignments outside its saved list. Tasks from other clients have no Hermes LW allowlist and fail closed in this app until one is saved.
 - Every allowed profile requires a separate positive USD planning value. Those values are saved for planning, not enforced by Hermes.
 - App-created tasks have a finite Hermes worker runtime and one attempt. A timeout prevents automatic retry, but the runtime is not translated into dollars.

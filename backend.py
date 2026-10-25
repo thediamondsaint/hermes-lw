@@ -6,6 +6,7 @@ import copy
 import ast
 import atexit
 import json
+import hashlib
 import math
 import os
 import re
@@ -15,6 +16,7 @@ import shlex
 import socket
 import subprocess
 import threading
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -33,12 +35,15 @@ ESTIMATES = HOME / ".local/share/hermes-control/estimates.json"
 APP_SETTINGS = HOME / ".local/share/hermes-control/settings.json"
 MODEL_CACHE = HOME / ".cache/hermes-control/openrouter-models.json"
 PORT = int(os.environ.get("HERMES_LW_PORT", "18731"))
-LOCK = threading.Lock()
+LOCK = threading.RLock()
 CONNECTIONS_PATH = HOME / ".local/share/hermes-control/connections.json"
 TUNNEL_LOCK = threading.Lock()
 TUNNELS: dict[str, tuple[subprocess.Popen, int]] = {}
 MODEL_CACHE_SECONDS = 6 * 60 * 60
 MAX_REQUEST_BYTES = 1_048_576
+BACKEND_FINGERPRINT = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+ACTIVE_POSTS = 0
+ACTIVE_POSTS_LOCK = threading.Lock()
 
 
 def atomic_write(path: Path, content: str, mode: int = 0o600) -> None:
@@ -258,7 +263,7 @@ def cmd(*args: str, timeout: int = 12) -> str:
 
 
 def profile_slugs() -> list[str]:
-    return ["default"] + sorted(p.name for p in PROFILES.iterdir() if p.is_dir() and (p / "config.yaml").exists())
+    return ["default"] + sorted(p.name for p in PROFILES.glob("*") if p.is_dir() and (p / "config.yaml").exists())
 
 
 def profile_paths(slug: str) -> tuple[Path, Path]:
@@ -360,6 +365,8 @@ def app_settings() -> dict:
         data = json.loads(APP_SETTINGS.read_text())
     except Exception:
         data = {}
+    if not isinstance(data, dict):
+        data = {}
     data.setdefault("manager_profile", "")
     data.setdefault("paused_profiles", [])
     data.setdefault("favorite_models", [])
@@ -389,24 +396,36 @@ def update_env_key(path: Path, key_name: str, value: str | None) -> None:
 
 
 def clear_profile_credentials(slug: str) -> None:
-    """Remove copied provider secrets from a new profile unless explicitly retained."""
+    """Clear copied secrets, including OAuth pools, while preserving endpoints."""
     path = profile_env_path(slug)
-    if not path.exists():
-        return
-    key_names = {name for provider in installed_model_providers() for name in provider.get("env_vars", [])}
+    key_names = {name for provider in installed_model_providers()
+                 for name in provider.get("env_vars", [])
+                 if name.endswith(("_API_KEY", "_TOKEN")) or name in {"GH_TOKEN", "GITHUB_TOKEN"}}
     key_names.update({"CUSTOM_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "GH_TOKEN", "GITHUB_TOKEN"})
-    lines = []
-    for line in path.read_text().splitlines():
-        match = re.match(r"^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=", line)
-        if match and (match.group(1) in key_names or match.group(1).endswith(("_API_KEY", "_TOKEN"))):
-            continue
-        lines.append(line)
-    atomic_write(path, "\n".join(lines) + ("\n" if lines else ""))
+    if path.exists():
+        lines = []
+        for line in path.read_text().splitlines():
+            match = re.match(r"^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=", line)
+            if match and (match.group(1) in key_names or match.group(1).endswith(("_API_KEY", "_TOKEN"))):
+                continue
+            lines.append(line)
+        atomic_write(path, "\n".join(lines) + ("\n" if lines else ""))
+    # Full clones also copy Hermes' OAuth/API credential pools.
+    for name in ("auth.json", "auth.lock"):
+        (profile_hermes_home(slug) / name).unlink(missing_ok=True)
     config_path, _ = profile_paths(slug)
     config = yaml.safe_load(config_path.read_text()) or {}
-    model = config.get("model") if isinstance(config.get("model"), dict) else {}
-    if model.pop("api_key", None):
-        write_profile_config(config_path, config)
+    def without_secrets(value):
+        if isinstance(value, dict):
+            return {key: without_secrets(item) for key, item in value.items()
+                    if str(key).lower() not in {"api_key", "api_keys", "token", "access_token", "refresh_token", "password", "secret", "authorization"}
+                    and not str(key).lower().endswith(("_api_key", "_token"))}
+        if isinstance(value, list):
+            return [without_secrets(item) for item in value]
+        return value
+    clean = without_secrets(config)
+    if clean != config:
+        write_profile_config(config_path, clean)
 
 
 def has_env_key(path: Path, key_name: str = "OPENROUTER_API_KEY") -> bool:
@@ -454,7 +473,8 @@ def read_profiles() -> list[dict]:
 
 def read_estimates() -> dict:
     try:
-        return json.loads(ESTIMATES.read_text())
+        data = json.loads(ESTIMATES.read_text())
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
@@ -831,16 +851,51 @@ def profile_hermes_home(slug: str) -> Path:
     return HERMES if slug == "default" else PROFILES / slug
 
 
-def run_profile_hermes(slug: str, args: list[str], timeout: int = 25) -> subprocess.CompletedProcess:
+def run_profile_hermes(slug: str, args: list[str], timeout: int = 25, home_override: Path | None = None) -> subprocess.CompletedProcess:
     """Run a Hermes management command against one isolated profile."""
     safe_slug(slug)
     executable = shutil.which("hermes")
     if not executable:
         raise RuntimeError("Hermes CLI is not available")
     env = os.environ.copy()
-    env["HERMES_HOME"] = str(profile_hermes_home(slug))
+    env["HERMES_HOME"] = str(home_override or profile_hermes_home(slug))
+    if home_override:
+        # Generation credentials come from the chosen profile, not an unrelated
+        # provider key inherited by the GUI's parent shell.
+        names = {name for provider in installed_model_providers() for name in provider.get("env_vars", [])
+                 if name.endswith(("_API_KEY", "_TOKEN"))}
+        for name in list(env):
+            if name in names or name.endswith(("_API_KEY", "_TOKEN")) or name in {"GH_TOKEN", "GITHUB_TOKEN"}:
+                env.pop(name, None)
     return subprocess.run([executable, *args], cwd=str(HOME), env=env, text=True,
                           capture_output=True, timeout=timeout, check=False)
+
+
+def run_isolated_generation(source: str, args: list[str], provider: str, model: str):
+    """Use the chosen route without source fallbacks, plugins, tools, or rules."""
+    if provider == "auto":
+        raise ValueError("Choose an explicit provider for generation instead of Automatic")
+    config_path, _ = profile_paths(source)
+    config = yaml.safe_load(config_path.read_text()) or {}
+    source_model = config.get("model") if isinstance(config.get("model"), dict) else {}
+    selected_model = copy.deepcopy(source_model)
+    if provider != source_model.get("provider") and provider != "custom":
+        selected_model.pop("base_url", None)
+        selected_model.pop("api_key", None)
+    selected_model.update({"provider": provider, "default": model})
+    minimal = {"model": selected_model, "providers": config.get("providers", {}),
+               "agent": {"max_turns": 1}, "fallback_providers": [], "fallback_model": None,
+               "mcp_servers": {}, "plugins": {"enabled": []}}
+    with tempfile.TemporaryDirectory(prefix="hermes-lw-generation-") as folder:
+        home = Path(folder)
+        write_profile_config(home / "config.yaml", minimal)
+        for name in (".env", "auth.json"):
+            path = profile_hermes_home(source) / name
+            if path.is_file():
+                atomic_write(home / name, path.read_text())
+        if not (home / ".env").exists():
+            atomic_write(home / ".env", "")
+        return run_profile_hermes(source, args, timeout=180, home_override=home)
 
 
 def plugin_list_for_profile(slug: str) -> list[dict]:
@@ -1094,6 +1149,29 @@ print(json.dumps({'ok': bool(_save_mcp_server(data['name'], config))}))
     return {"ok": True, "profile": slug, "message": "Hermes profile updated"}
 
 
+def launch_hermes_terminal(payload: dict) -> dict:
+    text = str(payload.get("prompt", "")).strip()
+    if not text or len(text) > 20000:
+        raise ValueError("Enter a prompt of up to 20,000 characters")
+    source = safe_slug(str(payload.get("profile", "default")))
+    if source in app_settings()["paused_profiles"]:
+        raise ValueError("Resume the selected profile before launching it")
+    provider = str(payload.get("provider", "")).strip()
+    model = str(payload.get("model", "")).strip()
+    if provider not in {entry["id"] for entry in installed_model_providers()}:
+        raise ValueError("Choose a supported provider")
+    if not model or model.startswith("-") or len(model) > 200 or any(c.isspace() for c in model):
+        raise ValueError("Enter the exact model ID to launch")
+    terminal = shutil.which("xdg-terminal-exec")
+    if os.environ.get("HERMES_LW_TOKEN") or not (os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")) or not terminal:
+        raise ValueError("A local graphical session with xdg-terminal-exec is required. Open a terminal on the remote host for remote Hermes sessions.")
+    subprocess.Popen([terminal, "--title=Hermes LW", "--", "hermes", "-p", source,
+                      "--provider", provider, "--model", model, "-z", text],
+                     cwd=str(HOME), start_new_session=True, stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return {"ok": True, "message": f"Opened Hermes terminal · {source} · {provider}/{model}"}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
@@ -1133,21 +1211,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False, allow_nan=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Length", str(len(body)))
-        origin = self.headers.get("Origin")
-        local_opaque_origin = origin == "null" and self.headers.get("Sec-Fetch-Site", "").lower() != "cross-site"
-        if local_opaque_origin or origin == "file://" or (
-                origin and origin.startswith("http://") and any(host in origin for host in ("http://127.0.0.1", "http://localhost"))):
-            self.send_header("Access-Control-Allow-Origin", origin)
-            self.send_header("Vary", "Origin")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Length", str(len(body)))
+            origin = self.headers.get("Origin")
+            local_opaque_origin = origin == "null" and self.headers.get("Sec-Fetch-Site", "").lower() != "cross-site"
+            if local_opaque_origin or origin == "file://" or (
+                    origin and origin.startswith("http://") and any(host in origin for host in ("http://127.0.0.1", "http://localhost"))):
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def read_body(self):
         raw_length = self.headers.get("Content-Length", "0")
@@ -1174,7 +1255,12 @@ class Handler(BaseHTTPRequestHandler):
         if not self.request_is_local(): return
         try:
             route = urllib.parse.urlparse(self.path)
-            if route.path == "/api/connections":
+            if route.path == "/api/health":
+                with ACTIVE_POSTS_LOCK:
+                    busy = ACTIVE_POSTS
+                self.send_json({"app": "hermes-lw", "pid": os.getpid(),
+                                "backend_fingerprint": BACKEND_FINGERPRINT, "active_actions": busy})
+            elif route.path == "/api/connections":
                 self.send_json({"connections": [connection_status(row) for row in read_connections()]})
             elif route.path == "/api/state":
                 query = urllib.parse.parse_qs(route.query)
@@ -1209,6 +1295,23 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, 500)
 
     def do_POST(self):
+        global ACTIVE_POSTS
+        # Serialize read/modify/write actions; long inference and proxy requests
+        # remain independent so the dashboard and other connections stay usable.
+        concurrent = {"/api/profile/generate", "/api/models/recommend", "/api/connections/request", "/api/connections/connect"}
+        with ACTIVE_POSTS_LOCK:
+            ACTIVE_POSTS += 1
+        try:
+            if self.path in concurrent:
+                self.handle_post()
+            else:
+                with LOCK:
+                    self.handle_post()
+        finally:
+            with ACTIVE_POSTS_LOCK:
+                ACTIVE_POSTS -= 1
+
+    def handle_post(self):
         if not self.request_is_local(): return
         try:
             payload = self.read_body()
@@ -1318,6 +1421,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not 0 <= priority <= 4: raise ValueError("Priority must be between 0 and 4")
                 args += ["--priority", str(priority)]
                 args += ["--max-runtime", f"{runtime_seconds}s", "--max-retries", "1"]
+                if not assignee:
+                    # Hermes has no native per-task LW allowlist. Never let its
+                    # dispatcher select a default worker for an unassigned card.
+                    args += ["--initial-status", "blocked"]
                 if payload.get("parent"): args += ["--parent", str(payload["parent"])]
                 result = cmd(*args)
                 created = json.loads(result) if result.startswith(("{", "[")) else {}
@@ -1387,16 +1494,7 @@ class Handler(BaseHTTPRequestHandler):
                 save_app_settings(settings)
                 self.send_json({"ok": True, "theme": settings["theme"]})
             elif self.path == "/api/hermes":
-                text = str(payload.get("prompt", "")).strip()
-                if not text: raise ValueError("Enter a prompt")
-                settings = app_settings()
-                manager = settings["manager_profile"]
-                if manager and manager in settings["paused_profiles"]:
-                    raise ValueError("The selected manager profile is paused. Resume it or choose another manager.")
-                args = ["hermes"] + (["-p", manager] if manager else []) + ["-z", text]
-                subprocess.Popen(args, cwd=str(HOME), start_new_session=True,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                self.send_json({"ok": True, "message": f"Hermes started{(' with ' + manager) if manager else ''}"})
+                self.send_json(launch_hermes_terminal(payload))
             else:
                 self.send_json({"error": "not found"}, 404)
         except ValueError as exc:
@@ -1553,8 +1651,9 @@ Role and specialty requested by the user: {inferred_role}
         # Root-level `-z` seeds an interactive chat. Use chat's one-shot query
         # mode so this request returns the generated file on stdout without a TTY.
         try:
-            completed = run_profile_hermes(source, ["chat", "-q", prompt, "-Q", "--source", "tool",
-                                                     "--provider", provider, "--model", model], timeout=180)
+            completed = run_isolated_generation(source, ["chat", "-q", prompt, "-Q", "--source", "tool",
+                                                     "--provider", provider, "--model", model,
+                                                     "--toolsets", "__hermes_lw_no_tools__", "--ignore-rules"], provider, model)
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("The selected profile’s Hermes model did not respond within 180 seconds. Check its provider, model, and network settings, then try again.") from exc
         if completed.returncode:
@@ -1589,6 +1688,13 @@ Role and specialty requested by the user: {inferred_role}
             raise ValueError("Choose a supported provider for the advisor model")
         if not model or len(model) > 200 or model.startswith("-") or any(char.isspace() or ord(char) < 32 for char in model):
             raise ValueError("Choose a valid advisor model from the catalog")
+        catalog = load_model_catalog(provider=provider, slug=source)
+        model_index = {row["id"]: row for row in catalog.get("models", [])}
+        advisor = model_index.get(model)
+        if not advisor or advisor.get("price_known") is not True:
+            raise ValueError("Advisor request blocked: choose a model with published pricing")
+        if "text" not in advisor.get("inputs", []) or "text" not in advisor.get("outputs", []):
+            raise ValueError("Choose an advisor model that accepts and returns text")
         raw_candidates = p.get("candidates")
         if not isinstance(raw_candidates, list) or not raw_candidates:
             raise ValueError("Search or filter the catalog to at least one candidate model first")
@@ -1602,6 +1708,9 @@ Role and specialty requested by the user: {inferred_role}
             model_id = str(row.get("id", "")).strip()
             if not model_id or len(model_id) > 200 or model_id in seen:
                 continue
+            if model_id not in model_index:
+                raise ValueError("Catalog changed; refresh it before asking for recommendations")
+            row = model_index[model_id]
             seen.add(model_id)
             candidates.append({
                 "id": model_id,
@@ -1614,7 +1723,7 @@ Role and specialty requested by the user: {inferred_role}
                 "context_tokens": max(0, int(_float(row.get("context_length")))),
                 "input_modalities": [str(x)[:20] for x in row.get("inputs", [])[:8] if isinstance(x, str)],
                 "output_modalities": [str(x)[:20] for x in row.get("outputs", [])[:8] if isinstance(x, str)],
-                "supports_tools": bool(row.get("supports_tools", False)),
+                "supports_tools": "tools" in row.get("supported_parameters", []),
             })
         if not candidates:
             raise ValueError("No valid catalog models were supplied")
@@ -1630,9 +1739,9 @@ Candidates:
 {candidate_json}
 """
         try:
-            completed = run_profile_hermes(source, ["chat", "-q", prompt, "-Q", "--source", "tool",
+            completed = run_isolated_generation(source, ["chat", "-q", prompt, "-Q", "--source", "tool",
                                                      "--provider", provider, "--model", model,
-                                                     "--toolsets", "__hermes_lw_no_tools__"], timeout=180)
+                                                     "--toolsets", "__hermes_lw_no_tools__", "--ignore-rules"], provider, model)
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("The advisor model did not respond within 180 seconds. Check provider and network settings.") from exc
         if completed.returncode:
@@ -1646,7 +1755,10 @@ Candidates:
             raise RuntimeError("The advisor model did not return valid recommendations. Try again or choose another model.") from exc
         allowed = {row["id"] for row in candidates}
         recommendations = []
-        for row in answer.get("recommendations", []) if isinstance(answer, dict) else []:
+        rows = answer.get("recommendations", []) if isinstance(answer, dict) else []
+        if not isinstance(rows, list):
+            raise RuntimeError("The advisor returned an invalid recommendation list")
+        for row in rows:
             if not isinstance(row, dict) or row.get("id") not in allowed:
                 continue
             if any(item["id"] == row["id"] for item in recommendations):
@@ -1724,9 +1836,14 @@ Candidates:
             selected = sorted({str(slug) for slug in allowed})
             if not selected: raise ValueError("Select at least one eligible profile; tasks cannot be open to all profiles")
             if set(selected) & set(app_settings()["paused_profiles"]): raise ValueError("Resume paused profiles before allowing them to work on a task")
+            detail = json.loads(cmd("kanban", "--board", board, "show", task_id, "--json"))
+            task = detail.get("task", detail)
+            assignee = task.get("assignee")
+            if assignee and assignee != "none" and assignee not in selected:
+                raise ValueError("Unassign or reassign the task before removing its assigned profile")
             record["allowed_profiles"] = selected
-        if "profile_budgets" in p:
-            budgets = p.get("profile_budgets")
+        if "profile_budgets" in p or "allowed_profiles" in p:
+            budgets = p.get("profile_budgets", record.get("profile_budgets", {}))
             if not isinstance(budgets, dict): raise ValueError("Profile budgets must be a mapping")
             allowed = record.get("allowed_profiles", [])
             clean = {}
@@ -1809,10 +1926,13 @@ Candidates:
         if action == "assign":
             assignee = str(p.get("assignee", "none"))
             if assignee != "none" and assignee in app_settings()["paused_profiles"]: raise ValueError("Resume this profile before assigning work")
-            if assignee != "none":
-                selected_tasks = {task.get("id"): task for task in dashboard(board)["tasks"] if task.get("id") in ids}
-                if set(selected_tasks) != set(ids): raise ValueError("One or more selected tasks no longer exist")
-                for task_id, task in selected_tasks.items():
+            selected_tasks = {task.get("id"): task for task in dashboard(board)["tasks"] if task.get("id") in ids}
+            if set(selected_tasks) != set(ids): raise ValueError("One or more selected tasks no longer exist")
+            for task_id, task in selected_tasks.items():
+                if assignee == "none":
+                    if task.get("status") != "blocked":
+                        raise ValueError("Block tasks before unassigning them so Hermes cannot choose a default worker")
+                else:
                     if assignee not in task.get("allowed_profiles", []):
                         raise ValueError(f"Profile {assignee} is not allowed to work on task {task_id}")
             for tid in ids: cmd("kanban", "--board", board, "assign", tid, assignee)
@@ -1868,6 +1988,8 @@ Candidates:
             assignee = str(p.get("assignee") or "none")
             current = next((task for task in dashboard(board)["tasks"] if task.get("id") == tid), None)
             if not current: raise ValueError("Task not found")
+            if assignee == "none" and current.get("status") != "blocked":
+                raise ValueError("Block the task before unassigning it so Hermes cannot choose a default worker")
             if assignee in app_settings()["paused_profiles"] and (not current or current.get("assignee") != assignee):
                 raise ValueError("Resume this profile before assigning new work")
             if assignee != "none" and assignee not in current.get("allowed_profiles", []):
@@ -1875,17 +1997,30 @@ Candidates:
             cmd("kanban", "--board", board, "assign", tid, assignee)
         elif action == "complete": cmd("kanban", "--board", board, "complete", tid)
         elif action == "block": cmd("kanban", "--board", board, "block", tid, str(p.get("reason", "Paused from Hermes Control")))
-        elif action == "unblock": cmd("kanban", "--board", board, "unblock", tid)
-        elif action == "promote": cmd("kanban", "--board", board, "promote", tid, "Promoted from Hermes Control")
+        elif action in ("unblock", "promote"):
+            current = next((task for task in dashboard(board)["tasks"] if task.get("id") == tid), None)
+            if not current: raise ValueError("Task not found")
+            assignee = current.get("assignee")
+            if not assignee or assignee not in current.get("allowed_profiles", []):
+                raise ValueError("Assign this task to an explicitly approved profile before making it runnable")
+            if assignee in app_settings()["paused_profiles"]:
+                raise ValueError("Resume the assigned profile before making this task runnable")
+            if float(current.get("profile_budgets", {}).get(assignee, 0)) <= 0:
+                raise ValueError("Save a positive planning budget for the assigned profile first")
+            if action == "unblock": cmd("kanban", "--board", board, "unblock", tid)
+            else: cmd("kanban", "--board", board, "promote", tid, "Promoted from Hermes Control")
         elif action == "schedule": cmd("kanban", "--board", board, "schedule", tid, str(p.get("reason", "Scheduled from Hermes Control")))
         elif action == "archive": cmd("kanban", "--board", board, "archive", tid)
         elif action == "priority":
+            priority = int(p.get("priority", 0))
+            if not 0 <= priority <= 4:
+                raise ValueError("Priority must be between 0 and 4")
             with LOCK:
                 import sqlite3
                 project = next(project for project in read_projects() if project["slug"] == board)
                 con = sqlite3.connect(project.get("db_path") or HERMES / "kanban.db", timeout=3)
                 try:
-                    con.execute("UPDATE tasks SET priority=? WHERE id=?", (int(p.get("priority", 0)), tid))
+                    con.execute("UPDATE tasks SET priority=? WHERE id=?", (priority, tid))
                     if con.total_changes == 0: raise ValueError("Task not found")
                     con.commit()
                 finally: con.close()

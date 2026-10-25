@@ -26,7 +26,10 @@ ShellRoot {
   property int connectionEpoch: 0
   property bool reconnecting: false
   property bool showConnectionEditor: false
-  property int pendingRequests: 0
+  property int pendingRequests: httpClient.pendingCount
+  HttpClient { id: httpClient }
+  Timer { id: noticeTimer; interval: 12000; onTriggered: root.notice = "" }
+  onNoticeChanged: if (root.notice.length) noticeTimer.restart()
   property string statusFilterValue: "all"
   property string assigneeFilterValue: "all"
   property var editingProject: null
@@ -47,6 +50,9 @@ ShellRoot {
   property bool showCreateProfile: false
   property bool showDeleteProfile: false
   property bool generatingPersonality: false
+  property bool creatingProfile: false
+  property bool creatingTask: false
+  property bool deletingProfile: false
   property string personalityGenerationStatus: ""
   property string personalityGeneratorProfile: "default"
   property bool showPromptEditor: false
@@ -68,12 +74,12 @@ ShellRoot {
     for (var i = 0; i < root.modelCatalog.length; ++i) {
       var item = root.modelCatalog[i]
       var id = String(item.id || "")
-      if (id && item.price_known !== false && (item.inputs || []).indexOf("text") >= 0 && (!term || id.toLowerCase().indexOf(term) >= 0 || String(item.name || "").toLowerCase().indexOf(term) >= 0)) {
+      if (id && item.price_known !== false && (item.inputs || []).indexOf("text") >= 0 && (item.outputs || []).indexOf("text") >= 0 && (!term || id.toLowerCase().indexOf(term) >= 0 || String(item.name || "").toLowerCase().indexOf(term) >= 0)) {
         options.push(id)
         seen[id] = true
       }
     }
-    if (root.modelAdvisorModel && !seen[root.modelAdvisorModel] && root.modelCatalog.some(function(m) { return m.id === root.modelAdvisorModel && m.price_known !== false && (m.inputs || []).indexOf("text") >= 0 }) && (!term || root.modelAdvisorModel.toLowerCase().indexOf(term) >= 0)) options.unshift(root.modelAdvisorModel)
+    if (root.modelAdvisorModel && !seen[root.modelAdvisorModel] && root.modelCatalog.some(function(m) { return m.id === root.modelAdvisorModel && m.price_known !== false && (m.inputs || []).indexOf("text") >= 0 && (m.outputs || []).indexOf("text") >= 0 }) && (!term || root.modelAdvisorModel.toLowerCase().indexOf(term) >= 0)) options.unshift(root.modelAdvisorModel)
     return options
   }
   property bool showProviderManager: false
@@ -99,6 +105,7 @@ ShellRoot {
   property var extensionMcpServers: []
   property var extensionMcpCatalog: []
   property bool extensionLoading: false
+  property int extensionRequestId: 0
   property string extensionSearch: ""
   property string extensionInstallId: ""
   property bool allowPluginToolOverride: false
@@ -421,6 +428,7 @@ ShellRoot {
     root.connections = rows
   }
   function activateConnection(id, initial) {
+    if (root.generatingPersonality || root.modelAdvisorLoading || root.creatingProfile || root.creatingTask || root.deletingProfile) { root.notice = "Wait for the current generation or create action before switching connections."; return }
     var target = root.connections.filter(function(c) { return c.id === id })[0]
     if (!target) return
     if (!initial && id === root.activeConnectionId && target.connected) return
@@ -466,6 +474,7 @@ ShellRoot {
     }, function(error) { root.notice = error.error || "Could not save connection" })
   }
   function closeRemoteConnection(id) {
+    if (id === root.activeConnectionId && (root.generatingPersonality || root.modelAdvisorLoading || root.creatingProfile || root.creatingTask || root.deletingProfile)) { root.notice = "Wait for the current action before closing this connection."; return }
     if (id === "local") return
     if (id === root.activeConnectionId) root.activateConnection("local")
     root.localRequest("POST", "/api/connections/remove", {id: id}, function(data) {
@@ -496,50 +505,26 @@ ShellRoot {
         if (callback) callback(value)
       }, function(error) {
         if (root.activeConnectionId !== httpsConnectionId || root.connectionEpoch !== httpsEpoch) return
-        root.backendConnected = false
-        root.setConnection(Object.assign({}, root.activeConnection(), {connected: false}))
+        root.backendConnected = !error.transport_error
+        root.setConnection(Object.assign({}, root.activeConnection(), {connected: !error.transport_error}))
         if (onFailure) onFailure(error)
       }, timeoutMs || 45000)
       return
     }
-    var xhr = new XMLHttpRequest()
     var requestedConnection = root.activeConnectionId
     var requestedEpoch = root.connectionEpoch
-    xhr.open(method, (baseOverride || root.activeApiBase()) + path)
-    xhr.timeout = timeoutMs || 20000
-    xhr.setRequestHeader("Content-Type", "application/json")
-    root.pendingRequests += 1
-    var settled = false
-    function finish() { if (!settled) { settled = true; root.pendingRequests = Math.max(0, root.pendingRequests - 1) } }
-    xhr.onreadystatechange = function() {
-      if (xhr.readyState === XMLHttpRequest.DONE) {
-        finish()
-        if (!managerOnly && (requestedConnection !== root.activeConnectionId || requestedEpoch !== root.connectionEpoch)) return
-        var value = {}
-        try { value = JSON.parse(xhr.responseText) } catch (e) { value = {error: "Invalid response from Hermes LW"} }
-        if (xhr.status >= 200 && xhr.status < 300) { if (!managerOnly) root.backendConnected = true; callback(value) }
-        else { if (!managerOnly) root.backendConnected = xhr.status !== 0; root.notice = value.error || "Request failed"; if (onFailure) onFailure(value) }
-      }
-    }
-    xhr.onerror = function() {
-      finish()
+    httpClient.send(method, (baseOverride || root.activeApiBase()) + path, payload, timeoutMs || 20000, function(value) {
       if (!managerOnly && (requestedConnection !== root.activeConnectionId || requestedEpoch !== root.connectionEpoch)) return
-      if (!managerOnly) {
-        root.backendConnected = false
-        var connection = root.activeConnection()
-        if (connection && connection.kind !== "local") { root.setConnection(Object.assign({}, connection, {connected: false, url: ""})); root.reconnectActiveConnection() }
-      }
-      root.notice = managerOnly ? "Local connection manager is unreachable" : "Hermes LW backend is unreachable"
-      if (onFailure) onFailure({error: root.notice})
-    }
-    xhr.ontimeout = function() {
-      finish()
+      if (!managerOnly) root.backendConnected = true
+      if (callback) callback(value)
+    }, function(error) {
       if (!managerOnly && (requestedConnection !== root.activeConnectionId || requestedEpoch !== root.connectionEpoch)) return
-      root.notice = "Hermes request timed out"
-      if (onFailure) onFailure({error: root.notice})
-    }
-    xhr.send(payload ? JSON.stringify(payload) : "{}")
+      if (!managerOnly) root.backendConnected = !error.transport_error
+      root.notice = error.error || "Hermes request failed"
+      if (onFailure) onFailure(error)
+    })
   }
+
   function refresh(boardSlug) {
     var requestedBoard = boardSlug || root.currentBoard
     request("GET", "/api/state" + (requestedBoard ? "?board=" + encodeURIComponent(requestedBoard) : ""), null, function(data) {
@@ -569,6 +554,7 @@ ShellRoot {
   }
   function openModelAdvisor() {
     root.showModelAdvisor = true
+    if (root.modelAdvisorLoading) return
     root.modelAdvisorQuestion = ""
     modelAdvisorQuestionInput.text = ""
     root.modelAdvisorStatus = ""
@@ -577,9 +563,10 @@ ShellRoot {
     root.modelAdvisorProfile = root.modelCatalogProfile || root.selectedProfile || "default"
     root.modelAdvisorModel = ""
     var profile = root.profileBySlug(root.modelAdvisorProfile)
-    if (root.modelCatalog.some(function(m) { return m.id === profile.model && m.price_known !== false && (m.inputs || []).indexOf("text") >= 0 })) root.modelAdvisorModel = profile.model
+    if (root.modelCatalog.some(function(m) { return m.id === profile.model && m.price_known !== false && (m.inputs || []).indexOf("text") >= 0 && (m.outputs || []).indexOf("text") >= 0 })) root.modelAdvisorModel = profile.model
     root.modelAdvisorModelSearch = ""
     modelAdvisorModelSearchInput.text = ""
+    modelAdvisorScroll.contentY = 0
   }
   function modelAdvisorCandidates() {
     return root.catalogItems.slice(0, 30).map(function(m) {
@@ -612,7 +599,7 @@ ShellRoot {
     if (!candidates.length) { root.modelAdvisorStatus = "Search or filter the catalog to matching models first."; return }
     root.modelAdvisorLoading = true
     var estimate = root.modelAdvisorEstimatedCost()
-    root.modelAdvisorStatus = "Sending one request to " + root.modelCatalogProvider + " · " + root.modelAdvisorModel + " using credentials from " + root.modelAdvisorProfile + ". Rough request estimate: " + root.formatModelAdvisorCost(estimate) + "."
+    root.modelAdvisorStatus = "Sending generation to " + root.modelCatalogProvider + " · " + root.modelAdvisorModel + " using credentials from " + root.modelAdvisorProfile + ". Rough request estimate: " + root.formatModelAdvisorCost(estimate) + "."
     root.request("POST", "/api/models/recommend", {question: question, profile: root.modelAdvisorProfile,
       provider: root.modelCatalogProvider, model: root.modelAdvisorModel, candidates: candidates}, function(data) {
       root.modelAdvisorLoading = false
@@ -674,14 +661,16 @@ ShellRoot {
     root.extensionProfile = profile || root.selectedProfile || "default"
     root.extensionPlatform = platform || root.extensionPlatform || "cli"
     root.extensionLoading = true
+    var requestId = ++root.extensionRequestId
     request("GET", "/api/extensions?profile=" + encodeURIComponent(root.extensionProfile) + "&platform=" + encodeURIComponent(root.extensionPlatform), null, function(data) {
+      if (requestId !== root.extensionRequestId) return
       root.extensionPlugins = data.plugins || []
       root.extensionTools = data.tools || []
       root.extensionMcpServers = data.mcp_servers || []
       root.extensionMcpCatalog = data.mcp_catalog || []
       root.extensionLoading = false
       root.extensionError = ""
-    }, function(error) { root.extensionLoading = false; root.extensionError = error.error || "Could not load Hermes capabilities" }, 45000)
+    }, function(error) { if (requestId !== root.extensionRequestId) return; root.extensionLoading = false; root.extensionError = error.error || "Could not load Hermes capabilities" }, 45000)
   }
   function extensionAction(kind, action, values) {
     var payload = values || ({})
@@ -919,6 +908,7 @@ ShellRoot {
     return allowed.length ? allowed.join(", ") : "None selected"
   }
   function createTask() {
+    if (root.creatingTask) return
     var payload = {board: root.currentBoard, title: newTitle.text, body: newBody.text,
       assignee: newAssignee.currentText === "Unassigned" ? "" : newAssignee.currentText,
       priority: Math.min(4, Math.max(0, Number(newPriority.text) || 0)), workspace: newWorkspace.currentText,
@@ -930,7 +920,8 @@ ShellRoot {
     for (var i = 0; i < payload.allowed_profiles.length; ++i) {
       if (root.newProfileBudgets[payload.allowed_profiles[i]] === undefined || Number(root.newProfileBudgets[payload.allowed_profiles[i]]) <= 0) { root.notice = "Set a positive budget for every selected profile"; return }
     }
-    request("POST", "/api/task/create", payload, function(){root.showNewTask = false; root.notice = "Task created"; root.refresh()})
+    root.creatingTask = true
+    request("POST", "/api/task/create", payload, function(){root.creatingTask = false; root.showNewTask = false; root.notice = payload.assignee ? "Task created" : "Task created blocked · assign an approved profile before unblocking"; root.refresh()}, function(){root.creatingTask = false}, 30000)
   }
   function resetBoardFilters() {
     root.statusFilterValue = "all"; root.assigneeFilterValue = "all"; root.taskSearch = ""
@@ -1050,20 +1041,23 @@ ShellRoot {
       workspace: newWorkspace.currentText}, function(d) { root.taskTemplates = d.templates || []; root.notice = "Task template saved" })
   }
   function createProfile() {
+    if (root.creatingProfile) return
     if (root.generatingPersonality) { root.notice = "Wait for personality generation to finish"; return }
     var payload = {slug: newProfileSlug.text, description: newProfileRole.text, clone_mode: cloneMode.currentIndex === 0 ? "empty" : cloneMode.currentIndex === 1 ? "clone" : "clone_all",
       source: cloneSource.currentText, copy_api_key: copyApiKey.checked, openrouter_api_key: newProfileKey.text, personality: generatedSoul.text}
+    root.creatingProfile = true
     request("POST", "/api/profile/create", payload, function(d) {
+      root.creatingProfile = false
       root.showCreateProfile = false
       root.selectedProfile = d.profile
       root.page = "Profiles"
       root.notice = "Profile " + d.profile + " created"
       root.refresh()
-    })
+    }, function(){root.creatingProfile = false}, 100000)
   }
   function openCreateProfileDialog() {
     root.showCreateProfile = true
-    root.generatingPersonality = false
+    if (root.generatingPersonality || root.creatingProfile) { root.notice = "A profile action is already running. Wait for its result before starting another."; return }
     root.personalityGenerationStatus = ""
     newProfileSlug.text = ""; newProfileRole.text = ""; generatedSoul.text = ""; newProfileKey.text = ""
     cloneMode.currentIndex = 1
@@ -1075,9 +1069,12 @@ ShellRoot {
     root.personalityGeneratorProvider = generatorInfo.provider || "auto"
     root.personalityGenerationModel = generatorInfo.model || ""
     root.personalityModelSearch = ""
+    personalityModelSearchInput.text = ""
+    createProfileScroll.contentY = 0
     root.loadModelCatalog(false, root.personalityGeneratorProvider, root.personalityGeneratorProfile, "")
   }
   function generatePersonality() {
+    if (root.generatingPersonality) return
     if (!newProfileSlug.text.trim()) { root.personalityGenerationStatus = "Enter a profile ID above before generating its personality."; root.notice = root.personalityGenerationStatus; return }
     if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,39}$/.test(newProfileSlug.text.trim())) { root.personalityGenerationStatus = "Use a profile ID with letters, numbers, and hyphens."; root.notice = root.personalityGenerationStatus; return }
     var generator = root.personalityGeneratorProfile || "default"
@@ -1085,7 +1082,7 @@ ShellRoot {
     var model = root.personalityGenerationModel.trim()
     if (!model) { root.personalityGenerationStatus = "Choose a model for this generation."; root.notice = root.personalityGenerationStatus; return }
     root.generatingPersonality = true
-    root.personalityGenerationStatus = "Sending one request via " + provider + " · " + model + " (credentials from " + generator + "). Waiting for the model response…"
+    root.personalityGenerationStatus = "Sending generation via " + provider + " · " + model + " (credentials from " + generator + "). Waiting for the model response…"
     root.request("POST", "/api/profile/generate", {name: newProfileSlug.text, role: newProfileRole.text,
       generator_profile: generator, provider: provider, model: model}, function(d) {
       root.generatingPersonality = false
@@ -1105,12 +1102,15 @@ ShellRoot {
     })
   }
   function deleteSelectedProfile() {
+    if (root.deletingProfile) return
+    root.deletingProfile = true
     request("POST", "/api/profile/delete", {slug: root.selectedProfile}, function() {
+      root.deletingProfile = false
       root.showDeleteProfile = false
       root.selectedProfile = "default"
       root.refresh()
       root.notice = "Profile deleted"
-    })
+    }, function(){root.deletingProfile = false}, 100000)
   }
   function toggleModelFavorite(modelId) {
     var shouldFavorite = root.favoriteModels.indexOf(modelId) < 0
@@ -1129,12 +1129,18 @@ ShellRoot {
     promptFavorite.checked = prompt ? !!prompt.favorite : true
     root.showPromptEditor = true
   }
-  function usePrompt(prompt) {
+  function openHermesPrompt(text) {
     root.showHermes = true
-    hermesPrompt.text = prompt.body
+    hermesPrompt.text = text || ""
+    var profile = root.managerProfile || root.selectedProfile || "default"
+    hermesLaunchProfile.currentIndex = Math.max(0, root.profiles.map(function(p){return p.slug}).indexOf(profile))
+    hermesLaunchModel.text = root.profileBySlug(profile).model || ""
+    hermesLaunchProvider.currentIndex = root.providerIndex(root.profileBySlug(profile).provider || "auto")
   }
+  function usePrompt(prompt) { root.openHermesPrompt(prompt.body) }
   function closeTopDialog() {
-    if (root.showConnectionEditor) root.showConnectionEditor = false
+    if (root.showModelAdvisor) root.showModelAdvisor = false
+    else if (root.showConnectionEditor) root.showConnectionEditor = false
     else if (root.showModels) root.showModels = false
     else if (root.showProviderManager) root.showProviderManager = false
     else if (root.showDeleteProfile) root.showDeleteProfile = false
@@ -1211,10 +1217,19 @@ ShellRoot {
     color: root.bg
     implicitWidth: 1500
     implicitHeight: 960
-    minimumSize: Qt.size(1150, 720)
+    minimumSize: Qt.size(480, 320)
 
-    Rectangle {
+    Flickable {
+      id: appViewport
       anchors.fill: parent
+      clip: true
+      contentWidth: Math.max(width, 1150)
+      contentHeight: Math.max(height, 720)
+      boundsBehavior: Flickable.StopAtBounds
+      ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
+      ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+      Rectangle {
+      width: appViewport.contentWidth; height: appViewport.contentHeight
       color: root.bg
 
       Column {
@@ -1228,7 +1243,7 @@ ShellRoot {
           Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: root.border }
           Row { anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 3
             Repeater { model: ["New project", "New task", "Add profile", "Model catalog", "Refresh", "Options"]
-              delegate: Rectangle { required property string modelData; required property int index; width: [88, 78, 88, 96, 66, 72][index]; height: 32; anchors.verticalCenter: parent.verticalCenter; color: toolbarHover.containsMouse ? root.hoverFill : root.raised; border.color: root.border
+              delegate: Rectangle { required property string modelData; required property int index; objectName: "toolbarButton_" + index; width: [88, 78, 88, 96, 66, 72][index]; height: 32; anchors.verticalCenter: parent.verticalCenter; color: toolbarHover.containsMouse ? root.hoverFill : root.raised; border.color: root.border
                 Row { anchors.centerIn: parent; spacing: 5
                   Text { text: ["▣", "+", "◉", "⌕", "↻", "⚙"][index]; color: root.accent; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
                   Text { text: modelData; color: root.text; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
@@ -1253,7 +1268,7 @@ ShellRoot {
             }
             Rectangle { width: 108; height: 30; anchors.verticalCenter: parent.verticalCenter; color: root.raised; border.color: root.border
               Row { anchors.centerIn: parent; spacing: 5; Text { text: "✳"; color: root.accent; font.pixelSize: 12 } Text { text: "Ask Hermes"; color: root.text; font.pixelSize: 9 } }
-              MouseArea { anchors.fill: parent; onClicked: root.showHermes = true }
+              MouseArea { anchors.fill: parent; onClicked: root.openHermesPrompt("") }
             }
           }
         }
@@ -1505,11 +1520,12 @@ ShellRoot {
               }
               Rectangle { width: parent.width - 276; height: parent.height; radius: 2; color: root.surface; border.color: root.border
                 Column {
+                  id: profileEditorForm
                   anchors.fill: parent; anchors.margins: 20; spacing: 13
                   property var current: root.profileBySlug(root.selectedProfile)
                   Row { width: parent.width; spacing: 8
                     Column { id: profileTitleColumn; spacing: 5
-                      Text { text: parent.parent.parent.current.slug || "Choose a profile"; color: root.text; font.pixelSize: 17; font.bold: true }
+                      Text { text: profileEditorForm.current.slug || "Choose a profile"; color: root.text; font.pixelSize: 17; font.bold: true }
                   Text { text: root.page === "Models & Providers" ? "BACKEND, MODEL & CREDENTIALS" : "PROFILE SETTINGS"; color: root.muted; font.pixelSize: 9; font.letterSpacing: 1.3 }
                     }
                     Item { width: Math.max(0, parent.width - profileTitleColumn.implicitWidth - 297 - 16); height: 1 }
@@ -1533,7 +1549,7 @@ ShellRoot {
                     Column { width: parent.width * 0.53; spacing: 6
                       Text { text: "DEFAULT MODEL"; color: root.muted; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.7 }
                       Row { width: parent.width; spacing: 7
-                        TextField { leftPadding: 9; rightPadding: 9; id: modelInput; width: parent.width - 91; height: 38; text: parent.parent.parent.parent.current.model || ""; color: root.text; font.pixelSize: 11; placeholderText: providerInput.currentValue === "openrouter" ? "provider/model-name" : "Model ID for selected provider"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                        TextField { leftPadding: 9; rightPadding: 9; id: modelInput; width: parent.width - 91; height: 38; text: profileEditorForm.current.model || ""; color: root.text; font.pixelSize: 11; placeholderText: providerInput.currentValue === "openrouter" ? "provider/model-name" : "Model ID for selected provider"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                         Rectangle { width: 84; height: 38; radius: 2; color: root.accent; border.color: root.border
                           Text { anchors.centerIn: parent; text: "Browse models"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
                           MouseArea { anchors.fill: parent; onClicked: root.openModelCatalog(providerInput.currentValue, root.selectedProfile, baseUrlInput.text) }
@@ -1542,11 +1558,11 @@ ShellRoot {
                     }
                     Column { width: parent.width * 0.27; spacing: 6
                       Text { text: "PROVIDER"; color: root.muted; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.7 }
-                      ComboBox { id: providerInput; width: parent.width; height: 38; model: root.modelProviders; textRole: "label"; valueRole: "id"; currentIndex: root.providerIndex(parent.parent.parent.current.provider || "auto"); contentItem: Text { text: providerInput.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                      ComboBox { id: providerInput; width: parent.width; height: 38; model: root.modelProviders; textRole: "label"; valueRole: "id"; currentIndex: root.providerIndex(profileEditorForm.current.provider || "auto"); contentItem: Text { text: providerInput.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                     }
                     Column { width: parent.width * 0.20 - 24; spacing: 6
                       Text { text: "REASONING"; color: root.muted; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.7 }
-                      TextField { leftPadding: 9; rightPadding: 9; id: reasoningInput; width: parent.width; height: 38; text: parent.parent.parent.current.reasoning || "medium"; color: root.text; font.pixelSize: 11; placeholderText: "low / medium / high"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                      TextField { leftPadding: 9; rightPadding: 9; id: reasoningInput; width: parent.width; height: 38; text: profileEditorForm.current.reasoning || "medium"; color: root.text; font.pixelSize: 11; placeholderText: "low / medium / high"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                     }
                   }
                   Row { width: parent.width; height: providerInput.currentValue === "custom" ? 38 : 0; visible: providerInput.currentValue === "custom"; spacing: 10
@@ -1575,7 +1591,7 @@ ShellRoot {
                     Text { anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; text: "PERSONALITY & SYSTEM VOICE"; color: root.muted; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.8 }
                     Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: "Edit the complete SOUL.md"; color: root.muted; font.pixelSize: 9 }
                   }
-                  TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: soulInput; width: parent.width; height: root.advancedMode ? parent.height * 0.36 : parent.height - 356; text: parent.current.personality || ""; color: root.text; font.pixelSize: 11; wrapMode: TextEdit.Wrap; selectByMouse: true; placeholderText: "Describe how this profile should think, speak, and work…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                  TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: soulInput; width: parent.width; height: root.advancedMode ? parent.height * 0.36 : parent.height - 356; text: profileEditorForm.current.personality || ""; color: root.text; font.pixelSize: 11; wrapMode: TextEdit.Wrap; selectByMouse: true; placeholderText: "Describe how this profile should think, speak, and work…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                   Row { width: parent.width; spacing: 10
                     Rectangle { width: 125; height: 34; radius: 2; color: root.accent
                       Text { anchors.centerIn: parent; text: "Save profile"; color: "#ffffff"; font.pixelSize: 10; font.bold: true }
@@ -1648,7 +1664,7 @@ ShellRoot {
                       }
                       Rectangle { width: 150; height: 34; color: root.raised; border.color: root.border
                         Text { anchors.centerIn: parent; text: root.modelCatalogLoading ? "Refreshing models…" : "Refresh model catalog"; color: root.accent; font.pixelSize: 9 }
-                        MouseArea { anchors.fill: parent; enabled: !root.modelCatalogLoading; onClicked: root.loadModelCatalog(true) }
+                        MouseArea { anchors.fill: parent; enabled: !root.modelCatalogLoading; onClicked: root.loadModelCatalog(true, root.modelCatalogProvider, root.modelCatalogProfile, root.modelCatalogBaseUrl) }
                       }
                     }
                     Text { text: root.modelCatalogFetchedAt ? "Catalog updated " + new Date(root.modelCatalogFetchedAt * 1000).toLocaleString() : "Catalog has not been loaded yet"; color: root.muted; font.pixelSize: 8 }
@@ -1674,7 +1690,7 @@ ShellRoot {
                 Item { width: 1; height: 1; Layout.fillWidth: true }
                 Rectangle { width: 112; height: 32; color: root.raised; border.color: root.border
                   Text { anchors.centerIn: parent; text: "Refresh catalog"; color: root.accent; font.pixelSize: 9 }
-                  MouseArea { anchors.fill: parent; onClicked: root.loadModelCatalog(true) }
+                  MouseArea { anchors.fill: parent; onClicked: root.loadModelCatalog(true, root.modelCatalogProvider, root.modelCatalogProfile, root.modelCatalogBaseUrl) }
                 }
               }
               Row { width: parent.width; height: 40; spacing: 8
@@ -1983,11 +1999,7 @@ ShellRoot {
               }
             }
 
-            // notification toast
-            Rectangle { visible: root.notice.length > 0; anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 20; width: Math.min(420, toastText.implicitWidth + 44); height: 42; radius: 2; color: root.darkMode ? "#243e2a" : "#dcefdc"; border.color: root.darkMode ? "#567e56" : "#78a278"; z: 20
-              Text { id: toastText; anchors.centerIn: parent; text: root.notice; color: root.darkMode ? "#d2f0ce" : "#32532f"; font.pixelSize: 10 }
-              Timer { running: root.notice.length > 0; interval: 3600; onTriggered: root.notice = "" }
-            }
+
           }
         }
 
@@ -2002,6 +2014,7 @@ ShellRoot {
         }
       }
       }
+    }
 
       // Project editor
       Rectangle { anchors.fill: parent; visible: root.showProjectEditor; color: "#99070b10"; z: 29; MouseArea { anchors.fill: parent; onClicked: {} }
@@ -2105,7 +2118,7 @@ ShellRoot {
             Row { width: parent.width; spacing: 10
               Rectangle { width: 128; height: 38; radius: 2; color: root.accent
                 Text { anchors.centerIn: parent; text: "Create task"; color: "#ffffff"; font.pixelSize: 10; font.bold: true }
-                MouseArea { anchors.fill: parent; onClicked: root.createTask() }
+                MouseArea { anchors.fill: parent; enabled: !root.creatingTask; onClicked: root.createTask() }
               }
               Rectangle { width: 92; height: 38; radius: 2; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Cancel"; color: root.muted; font.pixelSize: 10 } MouseArea { anchors.fill: parent; onClicked: root.showNewTask = false } }
             }
@@ -2114,17 +2127,21 @@ ShellRoot {
         }
       }
 
-      // Ask Hermes modal
+      // Local terminal launch with explicit profile, provider, and model.
       Rectangle { anchors.fill: parent; visible: root.showHermes; color: "#99070b10"; z: 31; MouseArea { anchors.fill: parent; onClicked: {} }
-        Rectangle { width: 500; height: 300; radius: 2; color: root.surface; border.color: "#7f9db9"; anchors.centerIn: parent; MouseArea { anchors.fill: parent }
-          XpTitleBar { z: 2; anchors.top: parent.top; width: parent.width; caption: "Start Hermes"; darkMode: root.darkMode; onCloseRequested: root.showHermes = false }
-          Column { anchors.fill: parent; anchors.margins: 24; anchors.topMargin: 50; spacing: 14
-            Row { width: parent.width; Text { text: "Start with Hermes"; color: root.text; font.pixelSize: 18; font.bold: true } Item { width: 1; height: 1; Layout.fillWidth: true } Item { width: 24; height: 20 } }
-            Text { text: root.managerProfile ? "This prompt will run with manager profile “" + root.managerProfile + "”." : "No manager selected · using the active default profile."; color: root.muted; font.pixelSize: 10 }
-            TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: hermesPrompt; width: parent.width; height: 105; color: root.text; font.pixelSize: 11; wrapMode: TextEdit.Wrap; placeholderText: "What would you like Hermes to do?"; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-            Rectangle { width: 128; height: 38; radius: 2; color: root.accent
-              Text { anchors.centerIn: parent; text: "Launch prompt"; color: "#ffffff"; font.pixelSize: 10; font.bold: true }
-              MouseArea { anchors.fill: parent; onClicked: root.request("POST", "/api/hermes", {prompt: hermesPrompt.text}, function(d){root.showHermes = false; root.notice = d.message || "Hermes started"}) }
+        Rectangle { width: Math.min(600, parent.width - 24); height: Math.min(490, parent.height - 24); radius: 2; color: root.surface; border.color: "#7f9db9"; anchors.centerIn: parent; clip: true; MouseArea { anchors.fill: parent }
+          XpTitleBar { z: 2; anchors.top: parent.top; width: parent.width; caption: "Open Hermes in a terminal"; darkMode: root.darkMode; onCloseRequested: root.showHermes = false }
+          Flickable { anchors.fill: parent; anchors.margins: 16; anchors.topMargin: 46; clip: true; contentHeight: hermesLaunchForm.implicitHeight
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            Column { id: hermesLaunchForm; width: parent.width - 12; spacing: 10
+              Text { text: "Launch with the profile and model you choose"; color: root.text; font.pixelSize: 16; font.bold: true }
+              ComboBox { id: hermesLaunchProfile; width: parent.width; height: 34; model: root.profiles.map(function(p){return p.slug}); onActivated: { var profile = root.profileBySlug(currentText); hermesLaunchModel.text = profile.model || ""; hermesLaunchProvider.currentIndex = root.providerIndex(profile.provider || "auto") } }
+              ComboBox { id: hermesLaunchProvider; width: parent.width; height: 34; model: root.modelProviders; textRole: "label"; valueRole: "id" }
+              TextField { id: hermesLaunchModel; width: parent.width; height: 34; placeholderText: "Exact model ID"; color: root.text; background: Rectangle { color: root.inputFill; border.color: root.border } }
+              TextArea { id: hermesPrompt; width: parent.width; height: 110; padding: 10; color: root.text; font.pixelSize: 11; wrapMode: TextEdit.Wrap; placeholderText: "What would you like Hermes to do?"; background: Rectangle { color: root.inputFill; border.color: root.border } }
+              Text { width: parent.width; text: root.activeConnection().kind === "local" ? "Opens a visible local terminal. Running this prompt uses the selected provider’s normal charges and profile configuration." : "Terminal launch is available for local connections. Use SSH on the remote host for a remote terminal."; color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap }
+              Button { text: "Open in terminal"; enabled: root.activeConnection().kind === "local" && hermesLaunchModel.text.trim().length > 0 && hermesPrompt.text.trim().length > 0
+                onClicked: root.request("POST", "/api/hermes", {prompt: hermesPrompt.text, profile: hermesLaunchProfile.currentText, provider: hermesLaunchProvider.currentValue, model: hermesLaunchModel.text}, function(d){root.showHermes = false; root.notice = d.message}) }
             }
           }
         }
@@ -2238,7 +2255,7 @@ ShellRoot {
             CheckBox { id: copyApiKey; text: "Copy source provider API keys"; checked: false; enabled: cloneMode.currentIndex > 0; contentItem: Text { text: copyApiKey.text; color: root.muted; font.pixelSize: 9; leftPadding: 26; verticalAlignment: Text.AlignVCenter } }
             Text { text: "NEW OPENROUTER API KEY · optional"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.8 }
             TextField { leftPadding: 9; rightPadding: 9; id: newProfileKey; width: parent.width; height: 36; echoMode: TextInput.Password; color: root.text; font.pixelSize: 10; placeholderText: "Stored privately in this profile’s .env"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-            Row { width: parent.width; height: 18; spacing: 8
+            Row { width: parent.width; height: 30; spacing: 8
               Text { text: "CREDENTIALS FROM"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.7; anchors.verticalCenter: parent.verticalCenter }
               ComboBox { id: personalityGeneratorPicker; width: parent.width - 150; height: 30; model: root.profiles.map(function(p) { return p.slug + " · " + p.model }); currentIndex: Math.max(0, root.profiles.map(function(p) { return p.slug }).indexOf(root.personalityGeneratorProfile)); onActivated: {
                   var profile = root.profiles[currentIndex]
@@ -2269,15 +2286,18 @@ ShellRoot {
               Button { id: generateSoulButton; width: 145; height: 30; enabled: !root.generatingPersonality && root.personalityGenerationModel.length > 0; text: root.generatingPersonality ? "Generating…" : "✦ Generate from name"; onClicked: root.generatePersonality()
                 contentItem: Text { text: generateSoulButton.text; color: root.blue; font.pixelSize: 8; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
                 background: Rectangle { radius: 2; color: root.selectedFill; border.color: root.border }
-                ToolTip.visible: hovered; ToolTip.text: "Uses one request with the exact provider and model selected above. Normal provider charges apply."
+                ToolTip.visible: hovered; ToolTip.text: "Uses the selected provider and model without the source profile’s fallback chain. Normal provider charges and retries may apply."
               }
             }
             Text { visible: root.personalityGenerationStatus.length > 0; text: root.personalityGenerationStatus; width: parent.width; height: visible ? (root.generatingPersonality ? 34 : 52) : 0; color: root.generatingPersonality ? root.blue : (text.indexOf("Generation failed:") === 0 || text.indexOf("empty response") >= 0 ? "#d86b62" : root.muted); font.pixelSize: 8; wrapMode: Text.WordWrap; verticalAlignment: Text.AlignVCenter; maximumLineCount: 4 }
             TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: generatedSoul; width: parent.width; height: 145; enabled: !root.generatingPersonality; color: root.text; font.pixelSize: 9; wrapMode: TextEdit.Wrap; selectByMouse: true; placeholderText: "Generated personality appears here. You can also write or edit it before creating the profile."; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Row { width: parent.width; height: 36; spacing: 9
-              Rectangle { width: 120; height: 36; radius: 2; color: root.generatingPersonality ? root.border : root.accent
-                Text { anchors.centerIn: parent; text: root.generatingPersonality ? "Please wait…" : "Create profile"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
-                MouseArea { anchors.fill: parent; enabled: !root.generatingPersonality; onClicked: root.createProfile() }
+              Button { id: createProfileSubmit; width: 120; height: 36
+                text: root.creatingProfile ? "Creating…" : root.generatingPersonality ? "Please wait…" : "Create profile"
+                enabled: !root.generatingPersonality && !root.creatingProfile
+                onClicked: root.createProfile()
+                contentItem: Text { text: createProfileSubmit.text; color: createProfileSubmit.enabled ? "#ffffff" : root.muted; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; font.pixelSize: 9; font.bold: true }
+                background: Rectangle { radius: 2; color: createProfileSubmit.enabled ? root.accent : root.raised; border.color: root.border }
               }
               Rectangle { width: 88; height: 36; radius: 2; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Cancel"; color: root.muted; font.pixelSize: 9 } MouseArea { anchors.fill: parent; onClicked: root.showCreateProfile = false } }
               Text { text: "Copied provider keys are removed unless you opt in. The new OpenRouter key field applies only to this profile."; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 225; wrapMode: Text.WordWrap }
@@ -2330,7 +2350,7 @@ ShellRoot {
             Text { text: "Delete “" + root.selectedProfile + "”?"; color: root.text; font.pixelSize: 17; font.bold: true }
             Text { text: "Hermes will remove this profile and its local data. Existing Kanban cards may still refer to its name."; color: root.muted; font.pixelSize: 10; wrapMode: Text.WordWrap; width: parent.width }
             Row { spacing: 10
-              Rectangle { width: 110; height: 36; radius: 2; color: root.red; Text { anchors.centerIn: parent; text: "Delete profile"; color: "#ffffff"; font.pixelSize: 9; font.bold: true } MouseArea { anchors.fill: parent; onClicked: root.deleteSelectedProfile() } }
+              Rectangle { width: 110; height: 36; radius: 2; color: root.red; Text { anchors.centerIn: parent; text: "Delete profile"; color: "#ffffff"; font.pixelSize: 9; font.bold: true } MouseArea { anchors.fill: parent; enabled: !root.deletingProfile; onClicked: root.deleteSelectedProfile() } }
               Rectangle { width: 88; height: 36; radius: 2; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Cancel"; color: root.muted; font.pixelSize: 9 } MouseArea { anchors.fill: parent; onClicked: root.showDeleteProfile = false } }
             }
           }
@@ -2366,7 +2386,12 @@ ShellRoot {
         MouseArea { anchors.fill: parent; onClicked: {} }
         Rectangle { width: Math.min(1160, parent.width - 24); height: Math.min(790, parent.height - 24); radius: 2; color: root.surface; border.color: "#7f9db9"; anchors.centerIn: parent; MouseArea { anchors.fill: parent }
           XpTitleBar { z: 2; anchors.top: parent.top; width: parent.width; caption: "Provider Connections"; darkMode: root.darkMode; onCloseRequested: root.showProviderManager = false }
-          Row { anchors.fill: parent; anchors.margins: 18; anchors.topMargin: 52; anchors.bottomMargin: 16; spacing: 14
+          Flickable { id: providerViewport; anchors.fill: parent; anchors.margins: 14; anchors.topMargin: 46; clip: true
+            contentWidth: Math.max(width, 1090); contentHeight: Math.max(height, 690); boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            Row { width: providerViewport.contentWidth; height: providerViewport.contentHeight; spacing: 14
+
             Rectangle { width: 286; height: parent.height; color: root.raised; border.color: root.border
               Column { anchors.fill: parent; anchors.margins: 12; spacing: 8
                 Row { width: parent.width; height: 24
@@ -2453,6 +2478,7 @@ ShellRoot {
               }
             }
           }
+          }
         }
       }
 
@@ -2462,7 +2488,12 @@ ShellRoot {
         Rectangle { width: Math.min(1120, parent.width - 24); height: Math.min(790, parent.height - 24); radius: 2; color: root.surface; border.color: "#7f9db9"; anchors.centerIn: parent
           XpTitleBar { z: 2; anchors.top: parent.top; width: parent.width; caption: root.catalogProviderName() + " Model Catalog"; darkMode: root.darkMode; onCloseRequested: root.showModels = false }
           MouseArea { anchors.fill: parent }
-          Column { anchors.fill: parent; anchors.margins: 22; anchors.topMargin: 50; spacing: 8
+          Flickable { id: catalogViewport; anchors.fill: parent; anchors.margins: 14; anchors.topMargin: 46; clip: true
+            contentWidth: Math.max(width, 1040); contentHeight: Math.max(height, 650); boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            Column { width: catalogViewport.contentWidth; height: catalogViewport.contentHeight; spacing: 8
+
             Row { width: parent.width; height: 44
               Column { id: catalogHeading; spacing: 4
                 Text { text: root.catalogProviderName() + " model catalog"; color: root.text; font.pixelSize: 18; font.bold: true }
@@ -2473,9 +2504,9 @@ ShellRoot {
                 Text { anchors.centerIn: parent; text: "✦ Ask AI"; color: root.blue; font.pixelSize: 9; font.bold: true }
                 MouseArea { anchors.fill: parent; enabled: !root.modelCatalogLoading && root.catalogItems.length > 0; onClicked: root.openModelAdvisor() }
               }
-              Rectangle { width: 88; height: 34; radius: 2; color: root.raised; border.color: root.border
+              Rectangle { id: catalogRefreshButton; width: 88; height: 34; radius: 2; color: root.raised; border.color: root.border
                 Text { anchors.centerIn: parent; text: root.modelCatalogLoading ? "Loading…" : "↻ Refresh"; color: root.accent; font.pixelSize: 9; font.bold: true }
-                MouseArea { anchors.fill: parent; enabled: !root.modelCatalogLoading; onClicked: root.loadModelCatalog(true) }
+                MouseArea { anchors.fill: parent; enabled: !root.modelCatalogLoading; onClicked: root.loadModelCatalog(true, root.modelCatalogProvider, root.modelCatalogProfile, root.modelCatalogBaseUrl) }
               }
               Item { width: 24; height: 20 }
             }
@@ -2561,7 +2592,17 @@ ShellRoot {
             Text { visible: !root.modelCatalogLoading && root.catalogItems.length === 0; text: root.modelCatalogError || (root.modelCatalog.length ? "No models match those filters." : "No model catalog is available for " + root.catalogProviderName() + ". Check provider credentials and refresh."); color: root.muted; font.pixelSize: 10; anchors.horizontalCenter: parent.horizontalCenter }
             Text { text: "Sample estimate uses " + root.samplePromptTokens + " input + " + root.sampleCompletionTokens + " output tokens. " + (root.modelCatalogProvider === "openrouter" ? "Published OpenRouter list prices are per million tokens; image/request charges may differ." : "A dash means this provider did not publish pricing or context details in Hermes' model list."); color: "#667783"; font.pixelSize: 8; wrapMode: Text.WordWrap; width: parent.width }
           }
+          }
         }
+      }
+
+      Rectangle { id: notificationToast; visible: root.notice.length > 0; z: 100
+        anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 28
+        width: Math.min(680, parent.width - 32); height: noticeText.implicitHeight + 28
+        radius: 3; color: root.raised; border.color: root.blue
+        Text { id: noticeText; anchors.left: parent.left; anchors.right: dismissNotice.left; anchors.verticalCenter: parent.verticalCenter; anchors.margins: 12
+          text: root.notice; wrapMode: Text.WordWrap; color: root.text; font.pixelSize: 11 }
+        Button { id: dismissNotice; width: 30; height: 28; anchors.right: parent.right; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter; text: "×"; onClicked: root.notice = "" }
       }
 
       // Model selection advisor, opened from the model catalog
@@ -2589,19 +2630,22 @@ ShellRoot {
                   var estimate = root.modelAdvisorEstimatedCost()
                   var count = Math.min(30, root.catalogItems.length)
                   var tokens = 300 + Math.ceil(root.modelAdvisorQuestion.length / 4) + count * 45
-                  return "Compares only the first " + count + " results matching your current catalog search/filters. " + (estimate === null ? "Request stays blocked until you choose an advisor model with published pricing." : "Rough advisor request estimate: " + root.formatModelAdvisorCost(estimate) + " (~" + tokens + " input / 350 output tokens).") + " One explicit request; provider billing can differ from this estimate."
+                  return "Compares only the first " + count + " results matching your current catalog search/filters. " + (estimate === null ? "Request stays blocked until you choose an advisor model with published pricing." : "Rough advisor request estimate: " + root.formatModelAdvisorCost(estimate) + " (~" + tokens + " input / 350 output tokens).") + " Starts only on your click. Provider token usage and retries can change the bill."
                 } }
               Row { width: parent.width; height: 36; spacing: 8
-                Rectangle { width: 130; height: 34; radius: 2; color: root.modelAdvisorLoading ? root.border : root.accent
-                  Text { anchors.centerIn: parent; text: root.modelAdvisorLoading ? "Asking…" : "Ask AI"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
-                  MouseArea { anchors.fill: parent; enabled: !root.modelAdvisorLoading && root.modelAdvisorModel.length > 0 && root.modelAdvisorEstimatedCost() !== null; onClicked: root.askModelAdvisor() }
+                Button { id: modelAdvisorAskButton; width: 130; height: 34
+                  text: root.modelAdvisorLoading ? "Asking…" : "Ask AI"
+                  enabled: !root.modelAdvisorLoading && root.modelAdvisorModel.length > 0 && root.modelAdvisorEstimatedCost() !== null && root.modelAdvisorQuestion.trim().length > 0
+                  onClicked: root.askModelAdvisor()
+                  contentItem: Text { text: modelAdvisorAskButton.text; color: modelAdvisorAskButton.enabled ? "#ffffff" : root.muted; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; font.pixelSize: 9; font.bold: true }
+                  background: Rectangle { radius: 2; color: modelAdvisorAskButton.enabled ? root.accent : root.raised; border.color: root.border }
                 }
                 Text { text: root.modelAdvisorLoading ? "Waiting for one response from the selected model…" : "No request runs until you press Ask AI."; color: root.modelAdvisorLoading ? root.blue : root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter; wrapMode: Text.WordWrap; width: parent.width - 145 }
               }
               Text { visible: root.modelAdvisorStatus.length > 0; text: root.modelAdvisorStatus; width: parent.width; height: visible ? 42 : 0; color: text.indexOf("Could not") === 0 || text.indexOf("did not") >= 0 ? "#d86b62" : root.muted; font.pixelSize: 8; wrapMode: Text.WordWrap; maximumLineCount: 3; verticalAlignment: Text.AlignVCenter }
               Text { visible: root.modelAdvisorSummary.length > 0; text: root.modelAdvisorSummary; width: parent.width; color: root.text; font.pixelSize: 10; wrapMode: Text.WordWrap }
               Repeater { model: root.modelAdvisorRecommendations
-                delegate: Rectangle { required property var modelData; width: modelAdvisorForm.width; height: recommendationText.implicitHeight + 18; radius: 2; color: root.raised; border.color: root.border
+                delegate: Rectangle { required property var modelData; required property int index; width: modelAdvisorForm.width; height: recommendationText.implicitHeight + 18; radius: 2; color: root.raised; border.color: root.border
                   Column { id: recommendationText; anchors.left: parent.left; anchors.right: locateButton.left; anchors.verticalCenter: parent.verticalCenter; anchors.leftMargin: 10; anchors.rightMargin: 8; spacing: 3
                     Text { text: (index + 1) + ".  " + modelData.id; color: root.accent; font.pixelSize: 10; font.bold: true; width: parent.width; wrapMode: Text.WordWrap }
                     Text { text: modelData.reason + (modelData.tradeoff ? "\nTrade-off: " + modelData.tradeoff : ""); color: root.text; font.pixelSize: 8; width: parent.width; wrapMode: Text.WordWrap }
