@@ -15,7 +15,11 @@ ShellRoot {
   property var taskTemplates: []
   property var selectedTaskIds: []
   property var newAllowedProfiles: []
+  property var newProfileBudgets: ({})
+  property bool aiProfilesEnabled: false
+  property var aiProfileSuggestions: []
   property var detailAllowedProfiles: []
+  property var detailProfileBudgets: ({})
   property bool backendConnected: false
   property int pendingRequests: 0
   property string statusFilterValue: "all"
@@ -80,6 +84,32 @@ ShellRoot {
     for (var i = 0; i < root.modelCatalog.length; ++i) found[root.modelPublisher(root.modelCatalog[i])] = true
     return ["All publishers"].concat(Object.keys(found).sort())
   }
+  property var advisorModels: {
+    var use = advisorTaskType.currentText
+    var category = use === "Code audit" || use === "Implementation" ? "Coding" : use === "Image work" ? "Vision" : "Text & chat"
+    var budget = Number(advisorBudget.text) || 0
+    return root.modelCatalog.filter(function(m) {
+      if (m.price_known === false || (m.inputs || []).indexOf("text") < 0) return false
+      if (use === "Image work" && (m.inputs || []).indexOf("image") < 0) return false
+      if (use !== "Image work" && m.category !== category && !(use === "Code audit" && m.category === "Text & chat")) return false
+      var estimate = (Number(m.input_rate || 0) * 4000 + Number(m.output_rate || 0) * 1200) / 1000000
+      return budget === 0 ? estimate === 0 : budget > 0 && estimate <= budget
+    }).sort(function(a,b) {
+      var ac = (Number(a.input_rate || 0) * 4000 + Number(a.output_rate || 0) * 1200) / 1000000
+      var bc = (Number(b.input_rate || 0) * 4000 + Number(b.output_rate || 0) * 1200) / 1000000
+      if (use === "Code audit" || use === "Implementation") return Number(b.context_length || 0) - Number(a.context_length || 0) || ac - bc
+      return ac - bc || Number(b.context_length || 0) - Number(a.context_length || 0)
+    }).slice(0, 8)
+  }
+  function advisorPrompt() {
+    var task = advisorProblem.text.trim() || "[Describe the problem and desired outcome]"
+    var kind = advisorTaskType.currentText
+    if (kind === "Code audit") return "You are a meticulous senior software auditor. Review the repository against this request: " + task + "\n\nTrace relevant code paths before drawing conclusions. Prioritize concrete defects, security and data-loss risks, and reproducible evidence. Report findings by severity with file and line references, explain impact, and list any areas you could not verify. Do not modify files unless explicitly asked."
+    if (kind === "Implementation") return "You are a senior software engineer. Implement this request: " + task + "\n\nInspect project conventions first, make the smallest complete change, preserve existing behavior outside scope, and summarize files changed and validation performed."
+    if (kind === "Research") return "Research this question: " + task + "\n\nUse primary sources where possible, compare evidence, distinguish confirmed facts from inference, and provide dated links and a concise recommendation."
+    if (kind === "Writing") return "Help produce this deliverable: " + task + "\n\nClarify the audience and success criteria from context, organize the result for quick reading, and flag assumptions that materially affect the outcome."
+    return "Solve this problem: " + task + "\n\nFirst restate the goal and constraints, then provide a practical plan, carry it through where tools allow, and report evidence, risks, and remaining uncertainties."
+  }
   function catalogProviderName() {
     var entry = root.providerEntry(root.modelCatalogProvider)
     return entry.label || root.modelCatalogProvider || "Model"
@@ -105,6 +135,16 @@ ShellRoot {
     if (rate < 5) return "$1–5 / M"
     if (rate < 20) return "$5–20 / M"
     return "$20+ / M"
+  }
+  function catalogPriceMatches(model, band, key) {
+    if (!band) return true
+    if (model.price_known === false) return false
+    var rate = Number(model[key] || 0)
+    if (band === 1) return rate === 0
+    if (band === 2) return rate > 0 && rate < 1
+    if (band === 3) return rate >= 1 && rate < 5
+    if (band === 4) return rate >= 5 && rate < 20
+    return rate >= 20
   }
   function catalogGroupLabel(model) {
     switch (catalogGroupBy.currentIndex) {
@@ -157,6 +197,40 @@ ShellRoot {
     if (model.price_known === false) return null
     return (Number(model.input_rate || 0) * root.samplePromptTokens + Number(model.output_rate || 0) * root.sampleCompletionTokens) / 1000000
   }
+  function recommendProfilesForTask() {
+    var text = (newTitle.text + " " + newBody.text).toLowerCase()
+    var scored = root.assignableProfiles().map(function(p) {
+      var haystack = (p.slug + " " + p.description + " " + p.personality + " " + p.model).toLowerCase()
+      var score = 0
+      var keywords = text.match(/[a-z0-9+#.-]{3,}/g) || []
+      for (var i = 0; i < keywords.length; ++i) if (haystack.indexOf(keywords[i]) >= 0) score += 2
+      if (/audit|review|security|inspect|analy[sz]e/.test(text) && /review|audit|security|analys|critic/.test(haystack)) score += 5
+      if (/code|implement|build|bug|refactor/.test(text) && /code|develop|engineer|program/.test(haystack)) score += 5
+      if (/research|compare|source|find/.test(text) && /research|search|analys/.test(haystack)) score += 4
+      if (/write|document|copy|design/.test(text) && /write|document|design|creative/.test(haystack)) score += 4
+      return {slug: p.slug, score: score, model: p.model, personality: p.personality || ""}
+    })
+    scored.sort(function(a,b) { return b.score - a.score || a.slug.localeCompare(b.slug) })
+    root.aiProfileSuggestions = scored.slice(0, Math.min(4, scored.length))
+  }
+  function setNewProfileBudget(slug, value) {
+    var budgets = Object.assign({}, root.newProfileBudgets)
+    var amount = Number(value)
+    if (String(value).trim() && isFinite(amount) && amount >= 0) budgets[slug] = amount
+    else delete budgets[slug]
+    root.newProfileBudgets = budgets
+  }
+  function toggleAiProfiles(value) {
+    root.aiProfilesEnabled = value
+    if (value) root.recommendProfilesForTask()
+  }
+  function startTaskFromAdvisor() {
+    root.aiProfilesEnabled = true
+    root.prepareNewTask()
+    newTitle.text = advisorTaskType.currentText + " task"
+    newBody.text = root.advisorPrompt()
+    root.page = "Kanban"
+  }
   function modalOpen() {
     return root.showModels || root.showProviderManager || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor
   }
@@ -180,6 +254,7 @@ ShellRoot {
     modelUseFilter.currentIndex = 0
     catalogModalityFilter.currentIndex = 0
     catalogPriceFilter.currentIndex = 0
+    catalogOutputPriceFilter.currentIndex = 0
     catalogContextFilter.currentIndex = 0
     catalogCapabilityFilter.currentIndex = 0
     catalogGroupBy.currentIndex = 0
@@ -216,15 +291,9 @@ ShellRoot {
       return output.indexOf("embeddings") >= 0
     })
     var price = catalogPriceFilter.currentIndex
-    if (price) items = items.filter(function(m) {
-      if (m.price_known === false) return false
-      var n = Number(m.input_rate || 0)
-      if (price === 1) return n === 0 && Number(m.output_rate || 0) === 0
-      if (price === 2) return n > 0 && n < 1
-      if (price === 3) return n >= 1 && n < 5
-      if (price === 4) return n >= 5 && n < 20
-      return n >= 20
-    })
+    if (price) items = items.filter(function(m) { return root.catalogPriceMatches(m, price, "input_rate") })
+    var outputPrice = catalogOutputPriceFilter.currentIndex
+    if (outputPrice) items = items.filter(function(m) { return root.catalogPriceMatches(m, outputPrice, "output_rate") })
     var context = catalogContextFilter.currentIndex
     if (context) items = items.filter(function(m) { return Number(m.context_length || 0) >= [0, 64000, 128000, 256000, 1000000][context] })
     var capability = catalogCapabilityFilter.currentIndex
@@ -579,11 +648,23 @@ ShellRoot {
     if (listName === "new") root.newAllowedProfiles = next
     else root.detailAllowedProfiles = next
   }
+  function setDetailProfileBudget(slug, value) {
+    var budgets = Object.assign({}, root.detailProfileBudgets)
+    var amount = Number(value)
+    if (String(value).trim() && isFinite(amount) && amount >= 0) budgets[slug] = amount
+    else delete budgets[slug]
+    root.detailProfileBudgets = budgets
+  }
   function prepareNewTask() {
+    var useSuggestions = root.aiProfilesEnabled
     newTitle.text = ""; newBody.text = ""; newPriority.text = "0"
     newDue.text = ""; newEffort.text = "0"; newCost.text = ""; newTags.text = ""
     newAssignee.currentIndex = 0; newWorkspace.currentIndex = 0; taskTemplate.currentIndex = 0
-    root.newAllowedProfiles = root.assignableProfiles().map(function(p) { return p.slug })
+    root.newAllowedProfiles = []
+    root.newProfileBudgets = ({})
+    root.aiProfileSuggestions = []
+    root.aiProfilesEnabled = useSuggestions
+    if (useSuggestions) root.recommendProfilesForTask()
     root.showNewTask = true
   }
   function laneTasks(statuses) { return root.tasks.filter(function(t) { return statuses.indexOf(t.status) >= 0 && root.taskMatches(t) }) }
@@ -597,9 +678,12 @@ ShellRoot {
       assignee: newAssignee.currentText === "Unassigned" ? "" : newAssignee.currentText,
       priority: Math.min(4, Math.max(0, Number(newPriority.text) || 0)), workspace: newWorkspace.currentText,
       due_date: newDue.text, effort_hours: Number(newEffort.text) || 0, tags: newTags.text,
-      allowed_profiles: root.newAllowedProfiles}
+      allowed_profiles: root.newAllowedProfiles, profile_budgets: root.newProfileBudgets}
     if (newCost.text.trim()) payload.cost = Number(newCost.text) || 0
     if (!payload.allowed_profiles.length) { root.notice = "Choose at least one eligible profile"; return }
+    for (var i = 0; i < payload.allowed_profiles.length; ++i) {
+      if (root.newProfileBudgets[payload.allowed_profiles[i]] === undefined || Number(root.newProfileBudgets[payload.allowed_profiles[i]]) <= 0) { root.notice = "Set a positive budget for every selected profile"; return }
+    }
     request("POST", "/api/task/create", payload, function(){root.showNewTask = false; root.notice = "Task created"; root.refresh()})
   }
   function resetBoardFilters() {
@@ -609,6 +693,7 @@ ShellRoot {
   function selectTask(task) {
     root.selectedTask = task
     root.detailAllowedProfiles = task.allow_all_profiles ? root.assignableProfiles().map(function(p) { return p.slug }) : (task.allowed_profiles || []).slice(0)
+    root.detailProfileBudgets = Object.assign({}, task.profile_budgets || {})
     root.selectedTaskDetail = ({})
     request("POST", "/api/task/detail", {id: task.id, board: root.currentBoard}, function(d) { root.selectedTaskDetail = d || ({}) })
   }
@@ -619,7 +704,10 @@ ShellRoot {
   }
   function saveTaskMetadata() {
     var plan = {id: root.selectedTask.id, board: root.currentBoard, due_date: taskDue.text, tags: taskTags.text,
-      effort_hours: Number(taskEffort.text) || 0, allowed_profiles: root.detailAllowedProfiles}
+      effort_hours: Number(taskEffort.text) || 0, allowed_profiles: root.detailAllowedProfiles, profile_budgets: root.detailProfileBudgets}
+    for (var i = 0; i < plan.allowed_profiles.length; ++i) {
+      if (root.detailProfileBudgets[plan.allowed_profiles[i]] === undefined || Number(root.detailProfileBudgets[plan.allowed_profiles[i]]) <= 0) { root.notice = "Set a positive budget for each eligible profile"; return }
+    }
     if (taskCost.text.trim()) plan.cost = Number(taskCost.text) || 0
     request("POST", "/api/task/estimate", plan, function() {
       root.notice = "Task planning details saved"; root.refresh()
@@ -819,6 +907,7 @@ ShellRoot {
   Shortcut { sequence: "Ctrl+6"; onActivated: root.page = "Models & Providers" }
   Shortcut { sequence: "Ctrl+7"; onActivated: root.page = "Options" }
   Shortcut { sequence: "Ctrl+8"; onActivated: { root.page = "Plugins & Tools"; root.loadExtensions() } }
+  Shortcut { sequence: "Ctrl+9"; onActivated: root.page = "Task Advisor" }
   Shortcut { sequence: "Escape"; enabled: root.showModels || root.showProviderManager || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor; onActivated: root.closeTopDialog() }
   Timer { interval: 10000; running: root.pendingRequests === 0 && !root.modalOpen(); repeat: true; onTriggered: root.refresh() }
   Component.onCompleted: { root.refresh(); root.loadModelProviders(); if (root.page === "Plugins & Tools") root.loadExtensions(root.selectedProfile, root.extensionPlatform) }
@@ -834,7 +923,10 @@ ShellRoot {
       profileKeyInput.text = ""
     }
   }
-  onPageChanged: if (page === "Plugins & Tools") root.loadExtensions(root.selectedProfile, root.extensionPlatform)
+  onPageChanged: {
+    if (page === "Plugins & Tools") root.loadExtensions(root.selectedProfile, root.extensionPlatform)
+    if (page === "Task Advisor" && root.modelCatalogProvider && root.modelCatalogProvider !== "auto" && !root.modelCatalog.length) root.loadModelCatalog(false)
+  }
 
   FloatingWindow {
     id: win
@@ -909,10 +1001,10 @@ ShellRoot {
                 }
               }
               Rectangle { width: parent.width; height: 1; color: root.border }
-              Repeater { model: ["Overview", "Projects", "Models & Providers", "Profiles", "Plugins & Tools", "Kanban", "Prompts", "Options"]
+              Repeater { model: ["Overview", "Projects", "Models & Providers", "Profiles", "Plugins & Tools", "Kanban", "Prompts", "Task Advisor", "Options"]
                 delegate: Rectangle { required property string modelData; width: parent.width; height: 25; color: root.page === modelData ? root.selectedFill : "transparent"; border.color: root.page === modelData ? root.blue : "transparent"
                   Row { anchors.fill: parent; anchors.leftMargin: 8; spacing: 8
-                    Text { text: modelData === "Overview" ? "⌂" : modelData === "Projects" ? "▣" : modelData === "Models & Providers" || modelData === "Options" ? "⚙" : modelData === "Profiles" ? "◉" : modelData === "Plugins & Tools" ? "⌘" : modelData === "Kanban" ? "▦" : "✦"; color: root.page === modelData ? "#ffffff" : root.accent; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: modelData === "Overview" ? "⌂" : modelData === "Projects" ? "▣" : modelData === "Models & Providers" || modelData === "Options" ? "⚙" : modelData === "Profiles" ? "◉" : modelData === "Plugins & Tools" ? "⌘" : modelData === "Kanban" ? "▦" : modelData === "Task Advisor" ? "◎" : "✦"; color: root.page === modelData ? "#ffffff" : root.accent; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
                     Text { text: modelData; color: root.page === modelData ? "#ffffff" : root.text; font.pixelSize: 10; anchors.verticalCenter: parent.verticalCenter }
                   }
                   MouseArea { anchors.fill: parent; onClicked: root.page = modelData }
@@ -956,8 +1048,8 @@ ShellRoot {
               Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#0a3683" }
               Row { anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 12; spacing: 8
                 Column { anchors.verticalCenter: parent.verticalCenter; spacing: 2
-                  Text { text: root.page === "Overview" ? "Workspace" : root.page === "Projects" ? "Projects" : root.page === "Profiles" ? "Agent profiles" : root.page === "Models & Providers" ? "Models & Providers" : root.page === "Plugins & Tools" ? "Plugins & Tools" : root.page === "Options" ? "Options" : root.page === "Kanban" ? "Task board" : "Prompt library"; color: "#ffffff"; font.pixelSize: 14; font.bold: true }
-                  Text { text: root.page === "Kanban" ? (root.projectInfo.name || "Default") + "  ·  " + root.tasks.length + " tasks" : root.page === "Models & Providers" ? "Choose a backend, model, and profile credentials" : root.page === "Plugins & Tools" ? "Profile-scoped plugins, tools, and MCP app connections" : root.page === "Options" ? "App-wide Hermes LW settings" : "Hermes LW"; color: "#e5efff"; font.pixelSize: 8 }
+                  Text { text: root.page === "Overview" ? "Workspace" : root.page === "Projects" ? "Projects" : root.page === "Profiles" ? "Agent profiles" : root.page === "Models & Providers" ? "Models & Providers" : root.page === "Plugins & Tools" ? "Plugins & Tools" : root.page === "Options" ? "Options" : root.page === "Kanban" ? "Task board" : root.page === "Task Advisor" ? "Task Advisor" : root.page === "Prompts" ? "Prompt library" : "Hermes LW"; color: "#ffffff"; font.pixelSize: 14; font.bold: true }
+                  Text { text: root.page === "Kanban" ? (root.projectInfo.name || "Default") + "  ·  " + root.tasks.length + " tasks" : root.page === "Models & Providers" ? "Choose a backend, model, and profile credentials" : root.page === "Plugins & Tools" ? "Profile-scoped plugins, tools, and MCP app connections" : root.page === "Task Advisor" ? "Choose a model and build a task prompt within your budget" : root.page === "Options" ? "App-wide Hermes LW settings" : "Hermes LW"; color: "#e5efff"; font.pixelSize: 8 }
                 }
                 Item { width: Math.max(1, parent.width - 600); height: 1 }
                 Text { width: 190; text: root.managerProfile ? "Manager: " + root.managerProfile : "No manager selected"; color: "#ffffff"; font.pixelSize: 9; elide: Text.ElideRight; horizontalAlignment: Text.AlignRight; anchors.verticalCenter: parent.verticalCenter; MouseArea { anchors.fill: parent; onClicked: root.page = "Profiles" } }
@@ -1268,6 +1360,59 @@ ShellRoot {
             }
 
             // PROFILE-SCOPED HERMES PLUGINS, TOOLSETS, AND MCP APP CONNECTIONS
+            Column { anchors.fill: parent; anchors.margins: 22; spacing: 12; visible: root.page === "Task Advisor"
+              Row { width: parent.width; height: 48; spacing: 10
+                Column { spacing: 4
+                  Text { text: "Model & prompt advisor"; color: root.text; font.pixelSize: 18; font.bold: true }
+                  Text { text: "Rank models from the selected provider catalog using your task type and budget."; color: root.muted; font.pixelSize: 9 }
+                }
+                Item { width: 1; height: 1; Layout.fillWidth: true }
+                Rectangle { width: 112; height: 32; color: root.raised; border.color: root.border
+                  Text { anchors.centerIn: parent; text: "Refresh catalog"; color: root.accent; font.pixelSize: 9 }
+                  MouseArea { anchors.fill: parent; onClicked: root.loadModelCatalog(true) }
+                }
+              }
+              Row { width: parent.width; height: 40; spacing: 8
+                ComboBox { id: advisorProvider; width: 170; height: 36; model: root.modelProviders; textRole: "label"; valueRole: "id"; currentIndex: Math.max(0, root.providerIndex(root.modelCatalogProvider || root.profileBySlug(root.selectedProfile).provider || "auto")); onActivated: root.loadModelCatalog(false, currentValue, root.selectedProfile, ""); contentItem: Text { text: advisorProvider.displayText || "Choose provider"; color: root.text; font.pixelSize: 9; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { color: root.inputFill; border.color: root.border } }
+                ComboBox { id: advisorTaskType; width: 190; height: 36; model: ["Code audit", "Implementation", "Research", "Writing", "General problem solving"]; contentItem: Text { text: advisorTaskType.displayText; color: root.text; font.pixelSize: 9; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { color: root.inputFill; border.color: root.border } }
+                Text { text: "MAX ESTIMATED COST · USD"; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
+                TextField { id: advisorBudget; width: 100; height: 36; text: "0.25"; color: root.text; font.pixelSize: 10; inputMethodHints: Qt.ImhFormattedNumbersOnly; background: Rectangle { color: root.inputFill; border.color: root.border } }
+                Text { text: "for 4K input + 1.2K output tokens"; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
+              }
+              TextArea { id: advisorProblem; width: parent.width; height: 90; leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; color: root.text; font.pixelSize: 10; wrapMode: TextEdit.Wrap; placeholderText: "Describe the problem. Example: Audit this GitHub repository for security issues, broken flows, and high-impact bugs."; background: Rectangle { color: root.inputFill; border.color: root.border } }
+              Row { width: parent.width; height: 22; spacing: 8
+                Text { text: "Recommended models · " + root.catalogProviderName(); color: root.text; font.pixelSize: 12; font.bold: true }
+                Item { width: 1; height: 1; Layout.fillWidth: true }
+                Text { text: root.modelCatalogLoading ? "Loading…" : root.modelCatalog.length + " available"; color: root.muted; font.pixelSize: 9 }
+              }
+              Flickable { width: parent.width; height: 194; clip: true; contentHeight: advisorModelList.implicitHeight
+                Column { id: advisorModelList; width: parent.width; spacing: 5
+                  Repeater { model: root.advisorModels
+                    delegate: Rectangle { required property var modelData; width: advisorModelList.width; height: 48; color: root.surface; border.color: root.border
+                      Row { anchors.fill: parent; anchors.margins: 9; spacing: 8
+                        Column { width: parent.width - 130; spacing: 4
+                          Text { text: modelData.name; color: root.text; font.pixelSize: 10; font.bold: true; elide: Text.ElideRight; width: parent.width }
+                          Text { text: modelData.id + " · " + modelData.category + " · " + Number(modelData.context_length || 0).toLocaleString() + " context"; color: root.muted; font.pixelSize: 8; elide: Text.ElideRight; width: parent.width }
+                        }
+                        Item { width: 1; height: 1; Layout.fillWidth: true }
+                        Text { text: "$" + ((Number(modelData.input_rate || 0) * 4000 + Number(modelData.output_rate || 0) * 1200) / 1000000).toFixed(4) + " / sample"; color: root.accent; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
+                        Rectangle { width: 70; height: 28; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Use model"; color: root.accent; font.pixelSize: 8 } MouseArea { anchors.fill: parent; onClicked: { if (!root.selectedProfile && root.profiles.length) root.selectedProfile = root.profiles[0].slug; root.page = "Models & Providers"; root.openModelCatalog(root.modelCatalogProvider, root.selectedProfile, "") } } }
+                      }
+                    }
+                  }
+                  Text { visible: root.advisorModels.length === 0; text: "No priced models match this budget and use. Choose a provider in Models & Providers, refresh its catalog, or raise the budget."; color: root.muted; font.pixelSize: 9; width: parent.width; wrapMode: Text.WordWrap; padding: 12 }
+                }
+              }
+              Row { width: parent.width; height: 34
+                Text { text: "Prompt draft"; color: root.text; font.pixelSize: 12; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                Item { width: 1; height: 1; Layout.fillWidth: true }
+                Rectangle { width: 116; height: 30; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Save prompt"; color: root.accent; font.pixelSize: 9 } MouseArea { anchors.fill: parent; onClicked: root.request("POST", "/api/prompt/save", {title: advisorTaskType.currentText + " task prompt", body: root.advisorPrompt(), favorite: false}, function(){root.notice = "Prompt saved to your library"; root.refresh()}) } }
+                Rectangle { width: 144; height: 30; color: root.accent; Text { anchors.centerIn: parent; text: "Use in new task"; color: "#ffffff"; font.pixelSize: 9; font.bold: true } MouseArea { anchors.fill: parent; onClicked: root.startTaskFromAdvisor() } }
+              }
+              TextArea { width: parent.width; height: 172; readOnly: true; selectByMouse: true; leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; text: root.advisorPrompt(); color: root.text; font.pixelSize: 9; wrapMode: TextEdit.Wrap; background: Rectangle { color: root.inputFill; border.color: root.border } }
+              Text { width: parent.width; wrapMode: Text.WordWrap; text: "Cost values are catalog-based estimates for the sample token counts, not provider billing guarantees. This advisor does not send your task to a model."; color: root.muted; font.pixelSize: 8 }
+            }
+
             Column { anchors.fill: parent; anchors.margins: 14; spacing: 10; visible: root.page === "Plugins & Tools"
               Row { width: parent.width; height: 36; spacing: 8
                 Text { text: "Profile"; color: root.muted; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
@@ -1397,10 +1542,13 @@ ShellRoot {
                 ComboBox { id: projectSwitch; width: 154; height: 30; model: root.activeProjects().map(function(p){return p.name || p.slug}); currentIndex: Math.max(0, root.activeProjects().map(function(p){return p.slug}).indexOf(root.currentBoard)); onActivated: root.openProject(root.activeProjects()[currentIndex].slug); contentItem: Text { text: projectSwitch.displayText; color: root.text; font.pixelSize: 10; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 8 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
                 Text { text: root.tasks.length + " cards"; color: root.muted; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
                 TextField { leftPadding: 9; rightPadding: 9; id: taskSearchInput; width: Math.min(280, parent.width * 0.28); height: 30; placeholderText: "Search title, profile, tag, ID…"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; onTextChanged: root.taskSearch = text; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-                Item { width: Math.max(1, parent.width - 154 - 48 - taskSearchInput.width - 120 - 32); height: 1 }
+                Item { width: Math.max(1, parent.width - 154 - 48 - taskSearchInput.width - 94 - 116 - 40); height: 1 }
+                CheckBox { id: aiProfilesBoardToggle; text: "AI/Profiles"; width: 94; height: 30; checked: root.aiProfilesEnabled; onToggled: root.aiProfilesEnabled = checked
+                  contentItem: Text { text: "AI/Profiles"; color: root.text; font.pixelSize: 8; leftPadding: 22; verticalAlignment: Text.AlignVCenter }
+                }
                 Rectangle { width: 116; height: 30; color: root.accent; border.color: root.border
                   Text { anchors.centerIn: parent; text: "+  New task"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
-                  MouseArea { anchors.fill: parent; onClicked: root.prepareNewTask() }
+                  MouseArea { anchors.fill: parent; onClicked: { root.prepareNewTask(); if (root.aiProfilesEnabled) root.recommendProfilesForTask() } }
                 }
               }
               Row { width: parent.width; height: 34; spacing: 8
@@ -1587,7 +1735,9 @@ ShellRoot {
         MouseArea { anchors.fill: parent; onClicked: {} }
         Rectangle { width: 540; height: Math.min(700, parent.height - 24); radius: 2; color: root.surface; border.color: "#7f9db9"; anchors.centerIn: parent
           XpTitleBar { z: 2; anchors.top: parent.top; width: parent.width; caption: "New Task"; darkMode: root.darkMode; onCloseRequested: root.showNewTask = false }
-          Column { anchors.fill: parent; anchors.margins: 22; anchors.topMargin: 50; spacing: 9
+          Flickable { anchors.fill: parent; anchors.margins: 20; anchors.topMargin: 48; clip: true; contentHeight: newTaskForm.implicitHeight
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            Column { id: newTaskForm; width: parent.width; spacing: 9
             Row { width: parent.width
               Column { spacing: 5; Text { text: "Create a task"; color: root.text; font.pixelSize: 18; font.bold: true } Text { text: "Add a card to " + (root.projectInfo.name || "this project"); color: root.muted; font.pixelSize: 10 } }
               Item { width: 1; height: 1; Layout.fillWidth: true }
@@ -1598,9 +1748,9 @@ ShellRoot {
               Rectangle { width: 84; height: 32; radius: 2; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Save template"; color: root.text; font.pixelSize: 8 } MouseArea { anchors.fill: parent; onClicked: root.saveTaskTemplate() } }
             }
             Text { text: "TITLE"; color: root.muted; font.pixelSize: 9; font.bold: true }
-            TextField { leftPadding: 9; rightPadding: 9; id: newTitle; width: parent.width; height: 40; color: root.text; font.pixelSize: 11; placeholderText: "What needs to get done?"; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            TextField { leftPadding: 9; rightPadding: 9; id: newTitle; width: parent.width; height: 40; color: root.text; font.pixelSize: 11; placeholderText: "What needs to get done?"; onTextChanged: if (root.aiProfilesEnabled) root.recommendProfilesForTask(); background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Text { text: "DESCRIPTION"; color: root.muted; font.pixelSize: 9; font.bold: true }
-            TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: newBody; width: parent.width; height: 82; color: root.text; font.pixelSize: 10; wrapMode: TextEdit.Wrap; placeholderText: "Context, acceptance criteria, useful links…"; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: newBody; width: parent.width; height: 82; color: root.text; font.pixelSize: 10; wrapMode: TextEdit.Wrap; placeholderText: "Context, acceptance criteria, useful links…"; onTextChanged: if (root.aiProfilesEnabled) root.recommendProfilesForTask(); background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Row { width: parent.width; spacing: 12
               Column { width: parent.width * 0.5 - 6; spacing: 6; Text { text: "ASSIGNEE"; color: root.muted; font.pixelSize: 9; font.bold: true }
                 ComboBox { id: newAssignee; width: parent.width; height: 38; model: ["Unassigned"].concat(root.newTaskAssigneeNames()); currentIndex: 0 }
@@ -1611,20 +1761,31 @@ ShellRoot {
             }
             Row { width: parent.width; spacing: 12
               Column { width: parent.width * 0.5 - 6; spacing: 6; Text { text: "WORKSPACE"; color: root.muted; font.pixelSize: 9; font.bold: true } ComboBox { id: newWorkspace; width: parent.width; height: 38; model: ["scratch", "worktree"] } }
-              Column { width: parent.width * 0.5 - 6; spacing: 6; Text { text: "COST ESTIMATE · USD"; color: root.muted; font.pixelSize: 9; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: newCost; width: parent.width; height: 38; placeholderText: "Optional"; color: root.text; inputMethodHints: Qt.ImhFormattedNumbersOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
+              Column { width: parent.width * 0.5 - 6; spacing: 6; Text { text: "COST ESTIMATE · USD"; color: root.muted; font.pixelSize: 9; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: newCost; width: parent.width; height: 38; placeholderText: "Planning estimate"; color: root.text; inputMethodHints: Qt.ImhFormattedNumbersOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
             }
             Row { width: parent.width; spacing: 8
               Column { width: parent.width * .30 - 6; spacing: 4; Text { text: "DUE DATE"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: newDue; width: parent.width; height: 34; placeholderText: "YYYY-MM-DD"; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
               Column { width: parent.width * .25 - 6; spacing: 4; Text { text: "EFFORT · HOURS"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: newEffort; width: parent.width; height: 34; text: "0"; color: root.text; font.pixelSize: 9; inputMethodHints: Qt.ImhFormattedNumbersOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
               Column { width: parent.width * .45 - 6; spacing: 4; Text { text: "TAGS · comma separated"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: newTags; width: parent.width; height: 34; placeholderText: "bug, launch, docs"; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
             }
+            Row { width: parent.width; spacing: 8
+              CheckBox { id: aiProfilesModalToggle; text: "AI/Profiles"; checked: root.aiProfilesEnabled; onToggled: root.toggleAiProfiles(checked); contentItem: Text { text: "AI/Profiles"; color: root.text; font.pixelSize: 9; leftPadding: 22; verticalAlignment: Text.AlignVCenter } }
+              Text { text: "Suggest eligible profiles from this task. Suggestions never enable a profile automatically."; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 145; wrapMode: Text.WordWrap }
+            }
+            Text { visible: root.aiProfilesEnabled && root.aiProfileSuggestions.length > 0; width: parent.width; text: "Suggestions (not selected): " + root.aiProfileSuggestions.map(function(p){return p.slug + (p.model && p.model !== "not set" ? " · " + p.model : "") + (p.personality ? " · " + p.personality.replace(/\s+/g, " ").slice(0, 76) : "")}).join("  |  "); color: root.accent; font.pixelSize: 8; wrapMode: Text.WordWrap }
             Column { width: parent.width; spacing: 4
               Text { text: "WHO CAN WORK ON THIS TASK"; color: root.muted; font.pixelSize: 9; font.bold: true }
-              Text { text: "Select the profiles eligible for this task. Assigned profile must be in this list."; color: root.muted; font.pixelSize: 8 }
-              Flow { width: parent.width; height: 48; spacing: 2
+              Text { text: "Select each eligible profile and enter its budget. Saved limits are task metadata; Hermes task execution does not currently enforce dollar caps."; color: root.muted; font.pixelSize: 8; wrapMode: Text.WordWrap; width: parent.width }
+              Flow { width: parent.width; height: 80; spacing: 4
                 Repeater { model: root.assignableProfiles()
-                  delegate: CheckBox { required property var modelData; width: Math.min(145, parent.width / 3); height: 24; checked: root.newAllowedProfiles.indexOf(modelData.slug) >= 0; onToggled: root.toggleProfileIn("new", modelData.slug)
-                    contentItem: Text { text: modelData.slug; color: root.text; font.pixelSize: 9; leftPadding: 22; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
+                  delegate: Rectangle { required property var modelData; width: Math.min(155, parent.width / 3); height: 36; color: root.raised; border.color: root.newAllowedProfiles.indexOf(modelData.slug) >= 0 ? root.accent : root.border
+                    Row { anchors.fill: parent; anchors.margins: 2; spacing: 1
+                      CheckBox { width: parent.width - 58; height: parent.height; checked: root.newAllowedProfiles.indexOf(modelData.slug) >= 0; onToggled: root.toggleProfileIn("new", modelData.slug)
+                        contentItem: Text { text: modelData.slug; color: root.text; font.pixelSize: 8; leftPadding: 20; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
+                      }
+                      Text { text: "$"; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
+                      TextField { width: 48; height: 27; text: root.newProfileBudgets[modelData.slug] === undefined ? "" : String(root.newProfileBudgets[modelData.slug]); placeholderText: "cap"; color: root.text; font.pixelSize: 8; inputMethodHints: Qt.ImhFormattedNumbersOnly; onTextChanged: root.setNewProfileBudget(modelData.slug, text); background: Rectangle { color: root.inputFill; border.color: root.border } }
+                    }
                   }
                 }
               }
@@ -1635,6 +1796,7 @@ ShellRoot {
                 MouseArea { anchors.fill: parent; onClicked: root.createTask() }
               }
               Rectangle { width: 92; height: 38; radius: 2; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Cancel"; color: root.muted; font.pixelSize: 10 } MouseArea { anchors.fill: parent; onClicked: root.showNewTask = false } }
+            }
             }
           }
         }
@@ -1679,10 +1841,17 @@ ShellRoot {
             }
             Column { width: parent.width; spacing: 3
               Text { text: "ELIGIBLE PROFILES"; color: root.muted; font.pixelSize: 9; font.bold: true }
-              Flow { width: parent.width; height: 46; spacing: 2
+              Text { text: "Explicit allowlist and per-profile planning budget. Hermes itself does not currently enforce spend caps."; color: root.muted; font.pixelSize: 8; wrapMode: Text.WordWrap; width: parent.width }
+              Flow { width: parent.width; height: 78; spacing: 4
                 Repeater { model: root.assignableProfiles()
-                  delegate: CheckBox { required property var modelData; width: Math.min(145, parent.width / 3); height: 23; checked: root.detailAllowedProfiles.indexOf(modelData.slug) >= 0; onToggled: root.toggleProfileIn("detail", modelData.slug)
-                    contentItem: Text { text: modelData.slug; color: root.text; font.pixelSize: 9; leftPadding: 22; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
+                  delegate: Rectangle { required property var modelData; width: Math.min(155, parent.width / 3); height: 36; color: root.raised; border.color: root.detailAllowedProfiles.indexOf(modelData.slug) >= 0 ? root.accent : root.border
+                    Row { anchors.fill: parent; anchors.margins: 2; spacing: 1
+                      CheckBox { width: parent.width - 58; height: parent.height; checked: root.detailAllowedProfiles.indexOf(modelData.slug) >= 0; onToggled: root.toggleProfileIn("detail", modelData.slug)
+                        contentItem: Text { text: modelData.slug; color: root.text; font.pixelSize: 8; leftPadding: 20; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
+                      }
+                      Text { text: "$"; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
+                      TextField { width: 48; height: 27; text: root.detailProfileBudgets[modelData.slug] === undefined ? "" : String(root.detailProfileBudgets[modelData.slug]); placeholderText: "cap"; color: root.text; font.pixelSize: 8; inputMethodHints: Qt.ImhFormattedNumbersOnly; onTextChanged: root.setDetailProfileBudget(modelData.slug, text); background: Rectangle { color: root.inputFill; border.color: root.border } }
+                    }
                   }
                 }
               }
@@ -1941,6 +2110,7 @@ ShellRoot {
             }
             Row { width: parent.width; height: 36; spacing: 8
               ComboBox { id: catalogPriceFilter; width: 135; height: 34; model: ["Any input price", "Free", "Under $1 / M", "$1–5 / M", "$5–20 / M", "$20+ / M"]; contentItem: Text { text: catalogPriceFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: catalogOutputPriceFilter; width: 140; height: 34; model: ["Any output price", "Free", "Under $1 / M", "$1–5 / M", "$5–20 / M", "$20+ / M"]; contentItem: Text { text: catalogOutputPriceFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               ComboBox { id: catalogContextFilter; width: 115; height: 34; model: ["Any context", "64K+", "128K+", "256K+", "1M+"]; contentItem: Text { text: catalogContextFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               ComboBox { id: catalogCapabilityFilter; width: 130; height: 34; model: ["Any capability", "Tool calling", "Reasoning", "Structured output"]; contentItem: Text { text: catalogCapabilityFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               Text { text: "IN"; color: root.muted; font.pixelSize: 8; font.bold: true; anchors.verticalCenter: parent.verticalCenter }

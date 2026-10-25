@@ -563,8 +563,10 @@ def dashboard(board: str = "") -> dict:
         task["due_date"] = estimate.get("due_date", "")
         task["tags"] = estimate.get("tags", [])
         task["effort_hours"] = float(estimate.get("effort_hours", 0) or 0)
-        task["allow_all_profiles"] = "allowed_profiles" not in estimate
+        # Fail closed: imported/legacy tasks are not implicitly eligible for every profile.
+        task["allow_all_profiles"] = False
         task["allowed_profiles"] = estimate.get("allowed_profiles", [])
+        task["profile_budgets"] = estimate.get("profile_budgets", {})
         task["has_estimate"] = "cost" in estimate
         cards.append(task)
     project = next((p for p in projects if p["slug"] == board), {})
@@ -1021,6 +1023,18 @@ class Handler(BaseHTTPRequestHandler):
                 if unknown_profiles:
                     raise ValueError("Choose profiles that still exist")
                 payload["allowed_profiles"] = sorted({str(slug) for slug in allowed})
+                if not payload["allowed_profiles"]: raise ValueError("Select at least one profile explicitly; no profile is enabled by default")
+                paused_profiles = set(app_settings()["paused_profiles"])
+                if set(payload["allowed_profiles"]) & paused_profiles: raise ValueError("Resume paused profiles before allowing them to work on a task")
+                profile_budgets = payload.get("profile_budgets", {})
+                if not isinstance(profile_budgets, dict): raise ValueError("Set a separate budget for each selected profile")
+                clean_budgets = {}
+                for slug in payload["allowed_profiles"]:
+                    if slug not in profile_budgets: raise ValueError(f"Set a budget for selected profile {slug}")
+                    cap = nonnegative_number(profile_budgets[slug], f"{slug} budget")
+                    if cap <= 0: raise ValueError(f"{slug} budget must be greater than zero")
+                    clean_budgets[slug] = cap
+                payload["profile_budgets"] = clean_budgets
                 assignee = str(payload.get("assignee", ""))
                 if assignee and assignee not in payload["allowed_profiles"]:
                     raise ValueError("The assigned profile must be included in the allowed profile list")
@@ -1293,7 +1307,21 @@ class Handler(BaseHTTPRequestHandler):
             known = set(profile_slugs())
             unknown = {str(slug) for slug in allowed if str(slug) not in known}
             if unknown: raise ValueError("Choose profiles that still exist")
-            record["allowed_profiles"] = sorted({str(slug) for slug in allowed})
+            selected = sorted({str(slug) for slug in allowed})
+            if not selected: raise ValueError("Select at least one eligible profile; tasks cannot be open to all profiles")
+            if set(selected) & set(app_settings()["paused_profiles"]): raise ValueError("Resume paused profiles before allowing them to work on a task")
+            record["allowed_profiles"] = selected
+        if "profile_budgets" in p:
+            budgets = p.get("profile_budgets")
+            if not isinstance(budgets, dict): raise ValueError("Profile budgets must be a mapping")
+            allowed = record.get("allowed_profiles", [])
+            clean = {}
+            for slug in allowed:
+                if slug not in budgets: raise ValueError(f"Set a budget for selected profile {slug}")
+                amount = nonnegative_number(budgets[slug], f"{slug} budget")
+                if amount <= 0: raise ValueError(f"{slug} budget must be greater than zero")
+                clean[slug] = amount
+            record["profile_budgets"] = clean
         estimates[key] = record
         if board == "default": estimates.pop(task_id, None)
         save_estimates(estimates)
@@ -1366,11 +1394,13 @@ class Handler(BaseHTTPRequestHandler):
         action = str(p.get("action", ""))
         if action == "assign":
             assignee = str(p.get("assignee", "none"))
-            if assignee in app_settings()["paused_profiles"]: raise ValueError("Resume this profile before assigning work")
+            if assignee != "none" and assignee in app_settings()["paused_profiles"]: raise ValueError("Resume this profile before assigning work")
             if assignee != "none":
-                for task in dashboard(board)["tasks"]:
-                    if task.get("id") in ids and not task.get("allow_all_profiles", True) and assignee not in task.get("allowed_profiles", []):
-                        raise ValueError(f"Profile {assignee} is not allowed to work on task {task.get('id')}")
+                selected_tasks = {task.get("id"): task for task in dashboard(board)["tasks"] if task.get("id") in ids}
+                if set(selected_tasks) != set(ids): raise ValueError("One or more selected tasks no longer exist")
+                for task_id, task in selected_tasks.items():
+                    if assignee not in task.get("allowed_profiles", []):
+                        raise ValueError(f"Profile {assignee} is not allowed to work on task {task_id}")
             for tid in ids: cmd("kanban", "--board", board, "assign", tid, assignee)
         elif action in ("complete", "archive"):
             cmd("kanban", "--board", board, action, *ids)
@@ -1423,9 +1453,10 @@ class Handler(BaseHTTPRequestHandler):
         if action == "assign":
             assignee = str(p.get("assignee") or "none")
             current = next((task for task in dashboard(board)["tasks"] if task.get("id") == tid), None)
+            if not current: raise ValueError("Task not found")
             if assignee in app_settings()["paused_profiles"] and (not current or current.get("assignee") != assignee):
                 raise ValueError("Resume this profile before assigning new work")
-            if assignee != "none" and current and not current.get("allow_all_profiles", True) and assignee not in current.get("allowed_profiles", []):
+            if assignee != "none" and assignee not in current.get("allowed_profiles", []):
                 raise ValueError(f"Profile {assignee} is not allowed to work on this task")
             cmd("kanban", "--board", board, "assign", tid, assignee)
         elif action == "complete": cmd("kanban", "--board", board, "complete", tid)
