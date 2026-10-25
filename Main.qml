@@ -1919,9 +1919,11 @@ ShellRoot {
 
       // Project editor
       Rectangle { anchors.fill: parent; visible: root.showProjectEditor; color: "#99070b10"; z: 29; MouseArea { anchors.fill: parent; onClicked: {} }
-        Rectangle { width: 560; height: Math.min(700, parent.height - 24); radius: 2; color: root.surface; border.color: "#7f9db9"; anchors.centerIn: parent; MouseArea { anchors.fill: parent }
+        Rectangle { width: Math.min(560, Math.max(320, parent.width - 24)); height: Math.min(700, Math.max(280, parent.height - 24)); radius: 2; color: root.surface; border.color: "#7f9db9"; anchors.centerIn: parent; clip: true; MouseArea { anchors.fill: parent }
           XpTitleBar { z: 2; anchors.top: parent.top; width: parent.width; caption: "Create / Edit Project"; darkMode: root.darkMode; onCloseRequested: root.showProjectEditor = false }
-          Column { anchors.fill: parent; anchors.margins: 22; anchors.topMargin: 50; spacing: 10
+          Flickable { id: projectEditorScroll; anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 14; anchors.topMargin: 48; anchors.bottomMargin: 10; clip: true; contentWidth: width; contentHeight: projectEditorForm.implicitHeight; boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            Column { id: projectEditorForm; width: projectEditorScroll.width - 12; spacing: 10
             Row { width: parent.width; height: 40
               Column { spacing: 4; Text { text: root.editingProject ? "Project settings" : "Create a project"; color: root.text; font.pixelSize: 17; font.bold: true } Text { text: "A project is an isolated Hermes board with its own queue."; color: root.muted; font.pixelSize: 9 } }
               Item { width: 1; height: 1; Layout.fillWidth: true }
@@ -1945,6 +1947,7 @@ ShellRoot {
               Rectangle { width: 118; height: 36; radius: 2; color: root.accent; Text { anchors.centerIn: parent; text: root.editingProject ? "Save project" : "Create project"; color: "#ffffff"; font.pixelSize: 9; font.bold: true } MouseArea { anchors.fill: parent; onClicked: root.saveProject() } }
               Rectangle { width: 86; height: 36; radius: 2; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Cancel"; color: root.muted; font.pixelSize: 9 } MouseArea { anchors.fill: parent; onClicked: root.showProjectEditor = false } }
             }
+          }
           }
         }
       }
@@ -2126,9 +2129,11 @@ ShellRoot {
 
       // Create or clone a profile
       Rectangle { anchors.fill: parent; visible: root.showCreateProfile; color: "#99070b10"; z: 34; MouseArea { anchors.fill: parent; onClicked: {} }
-        Rectangle { width: 660; height: Math.min(820, parent.height - 24); radius: 2; color: root.surface; border.color: "#7f9db9"; anchors.centerIn: parent; MouseArea { anchors.fill: parent }
+        Rectangle { width: Math.min(660, Math.max(320, parent.width - 24)); height: Math.min(820, Math.max(280, parent.height - 24)); radius: 2; color: root.surface; border.color: "#7f9db9"; anchors.centerIn: parent; clip: true; MouseArea { anchors.fill: parent }
           XpTitleBar { z: 2; anchors.top: parent.top; width: parent.width; caption: "Create / Clone Profile"; darkMode: root.darkMode; onCloseRequested: root.showCreateProfile = false }
-          Column { anchors.fill: parent; anchors.margins: 22; anchors.topMargin: 50; spacing: 9
+          Flickable { id: createProfileScroll; anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 14; anchors.topMargin: 48; anchors.bottomMargin: 10; clip: true; contentWidth: width; contentHeight: createProfileForm.implicitHeight; boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            Column { id: createProfileForm; width: createProfileScroll.width - 12; spacing: 9
             Row { width: parent.width; height: 42
               Column { spacing: 4; Text { text: "Create a profile"; color: root.text; font.pixelSize: 18; font.bold: true } Text { text: "Start fresh or clone another Hermes profile."; color: root.muted; font.pixelSize: 9 } }
               Item { width: 1; height: 1; Layout.fillWidth: true }
@@ -2191,6 +2196,7 @@ ShellRoot {
               Rectangle { width: 88; height: 36; radius: 2; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Cancel"; color: root.muted; font.pixelSize: 9 } MouseArea { anchors.fill: parent; onClicked: root.showCreateProfile = false } }
               Text { text: "Copied provider keys are removed unless you opt in. The new OpenRouter key field applies only to this profile."; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 225; wrapMode: Text.WordWrap }
             }
+          }
           }
         }
       }
