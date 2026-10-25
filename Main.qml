@@ -41,6 +41,10 @@ ShellRoot {
   property bool showPromptEditor: false
   property var editingPrompt: null
   property bool showModels: false
+  property bool showProviderManager: false
+  property string providerManagerProfile: ""
+  property string selectedManagedProvider: "auto"
+  property string managedCredentialName: ""
   property bool modelCatalogLoading: false
   property var modelCatalog: []
   property var modelProviders: []
@@ -132,7 +136,7 @@ ShellRoot {
     return (Number(model.input_rate || 0) * root.samplePromptTokens + Number(model.output_rate || 0) * root.sampleCompletionTokens) / 1000000
   }
   function modalOpen() {
-    return root.showModels || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor
+    return root.showModels || root.showProviderManager || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor
   }
   property var catalogDisplayItems: {
     var rows = [], items = root.catalogItems.slice(0, root.catalogVisibleLimit), index = 0
@@ -307,25 +311,115 @@ ShellRoot {
     for (var i = 0; i < root.modelProviders.length; ++i) if (root.modelProviders[i].id === "custom") return i
     return 0
   }
+  function credentialProviderId() {
+    return root.showProviderManager ? root.selectedManagedProvider : (providerInput.currentValue || "auto")
+  }
+  function credentialProfileSlug() {
+    return root.showProviderManager ? root.providerManagerProfile : root.selectedProfile
+  }
+  function providerEntry(id) {
+    var matches = root.modelProviders.filter(function(provider) { return provider.id === id })
+    return matches.length ? matches[0] : ({})
+  }
+  function providerHasKey(provider) {
+    var entry = provider || ({})
+    var configured = root.profileBySlug(root.providerManagerProfile).configured_api_keys || []
+    return (entry.env_vars || []).some(function(name) {
+      var isKey = /(_API_KEY|_TOKEN)$/.test(name) || name === "GH_TOKEN" || name === "GITHUB_TOKEN"
+      return isKey && configured.indexOf(name) >= 0
+    })
+  }
+  function providerStatus(provider) {
+    if (provider.id === root.profileBySlug(root.providerManagerProfile).provider) return "Active for profile"
+    if (provider.id === "auto") return "Automatic routing"
+    if (provider.id === "custom") return root.profileBySlug(root.providerManagerProfile).custom_api_key_configured ? "Key saved" : "Custom endpoint"
+    if (root.providerHasKey(provider)) return "Key saved"
+    var acceptsKey = (provider.env_vars || []).some(function(name) { return /(_API_KEY|_TOKEN)$/.test(name) || name === "GH_TOKEN" || name === "GITHUB_TOKEN" })
+    return acceptsKey ? "Needs API key" : "Hermes sign-in"
+  }
+  function providerManagerMatches(provider) {
+    var query = providerManagerSearch.text.trim().toLowerCase()
+    var text = [provider.id, provider.label, provider.description, (provider.aliases || []).join(" ")].join(" ").toLowerCase()
+    if (query && text.indexOf(query) < 0) return false
+    var filter = providerManagerFilter.currentIndex
+    var status = root.providerStatus(provider)
+    if (filter === 1) return provider.id === root.profileBySlug(root.providerManagerProfile).provider
+    if (filter === 2) return status === "Key saved" || status === "Active for profile"
+    if (filter === 3) return status === "Needs API key"
+    if (filter === 4) return status === "Hermes sign-in"
+    if (filter === 5) return provider.id === "custom"
+    return true
+  }
+  function openProviderManager() {
+    root.providerManagerProfile = root.selectedProfile || (root.profiles.length ? root.profiles[0].slug : "default")
+    root.showProviderManager = true
+    root.selectManagedProvider(root.profileBySlug(root.providerManagerProfile).provider || "auto")
+  }
+  function selectManagedProvider(id) {
+    root.selectedManagedProvider = id
+    var profile = root.profileBySlug(root.providerManagerProfile)
+    var active = profile.provider === id
+    providerManagerModel.text = active ? (profile.model || "") : ""
+    providerManagerBaseUrl.text = active ? (profile.base_url || "") : ""
+    providerManagerKey.text = ""
+    var configured = profile.configured_api_keys || []
+    var candidates = root.providerCredentialOptions(id)
+    root.managedCredentialName = ""
+    for (var i = 0; i < candidates.length; ++i) {
+      if (configured.indexOf(candidates[i]) >= 0) { root.managedCredentialName = candidates[i]; break }
+    }
+    if (!root.managedCredentialName && candidates.length) root.managedCredentialName = candidates.filter(function(name) { return name.endsWith("_API_KEY") })[0] || candidates[0]
+  }
+  function saveManagedProvider() {
+    var profile = root.profileBySlug(root.providerManagerProfile)
+    var baseUrl = root.selectedManagedProvider === "custom" ? providerManagerBaseUrl.text : ""
+    request("POST", "/api/profile/save", {slug: root.providerManagerProfile, provider: root.selectedManagedProvider,
+      model: providerManagerModel.text, base_url: baseUrl, reasoning: profile.reasoning || "medium", personality: profile.personality || ""}, function() {
+      root.notice = root.selectedManagedProvider + " saved for " + root.providerManagerProfile
+      root.refresh()
+    })
+  }
+  function chooseCatalogModel(modelId) {
+    if (root.showProviderManager) {
+      root.selectedManagedProvider = "openrouter"
+      providerManagerModel.text = modelId
+      providerManagerBaseUrl.text = ""
+      root.showModels = false
+      root.notice = "Selected " + modelId + " · save provider settings to use for this profile"
+    } else {
+      modelInput.text = modelId
+      providerInput.currentIndex = root.providerIndex("openrouter")
+      baseUrlInput.text = ""
+      root.showModels = false
+      root.notice = "Selected " + modelId + " · save profile to apply"
+    }
+  }
   function providerCredentialEnv() {
-    var id = providerInput.currentValue || "auto"
+    var id = root.credentialProviderId()
     if (id === "custom") return "CUSTOM_API_KEY"
     var entry = root.modelProviders.filter(function(p) { return p.id === id })[0]
     if (!entry) return ""
-    var candidates = (entry.env_vars || []).filter(function(name) { return /(_API_KEY|_TOKEN)$/.test(name) || name === "GH_TOKEN" || name === "GITHUB_TOKEN" })
-    var configured = root.currentProfile().configured_api_keys || []
+    var candidates = root.providerCredentialOptions(id)
+    if (root.showProviderManager && candidates.indexOf(root.managedCredentialName) >= 0) return root.managedCredentialName
+    var configured = root.profileBySlug(root.credentialProfileSlug()).configured_api_keys || []
     for (var i = 0; i < candidates.length; ++i) if (configured.indexOf(candidates[i]) >= 0) return candidates[i]
     var preferred = candidates.filter(function(name) { return name.endsWith("_API_KEY") })
     return preferred.length ? preferred[0] : (candidates[0] || "")
   }
+  function providerCredentialOptions(id) {
+    if (id === "custom") return ["CUSTOM_API_KEY"]
+    var entry = root.modelProviders.filter(function(p) { return p.id === id })[0]
+    return entry ? (entry.env_vars || []).filter(function(name) { return /(_API_KEY|_TOKEN)$/.test(name) || name === "GH_TOKEN" || name === "GITHUB_TOKEN" }) : []
+  }
   function providerCredentialConfigured() {
     var name = root.providerCredentialEnv()
     if (!name) return false
-    if (providerInput.currentValue === "custom") return !!root.currentProfile().custom_api_key_configured
-    return (root.currentProfile().configured_api_keys || []).indexOf(name) >= 0
+    var profile = root.profileBySlug(root.credentialProfileSlug())
+    if (root.credentialProviderId() === "custom") return !!profile.custom_api_key_configured
+    return (profile.configured_api_keys || []).indexOf(name) >= 0
   }
   function providerDescription() {
-    var id = providerInput.currentValue || "auto"
+    var id = root.credentialProviderId()
     var entry = root.modelProviders.filter(function(p) { return p.id === id })[0]
     if (id === "custom") return "Custom or local OpenAI-compatible endpoint"
     if (id === "auto") return "Let Hermes choose the configured route"
@@ -375,16 +469,19 @@ ShellRoot {
   function saveProfileKey() {
     var name = keyEnvName()
     if (!name) { root.notice = "This provider uses Hermes-managed authentication"; return }
-    if (!profileKeyInput.text) { root.notice = "Paste a key first"; return }
-    request("POST", "/api/profile/key", {slug: root.selectedProfile, provider: providerInput.currentValue, key_name: name, key: profileKeyInput.text}, function() {
-      profileKeyInput.text = ""; root.notice = name + " saved for " + root.selectedProfile; root.refresh()
+    var secretInput = root.showProviderManager ? providerManagerKey : profileKeyInput
+    var profileSlug = root.credentialProfileSlug()
+    if (!secretInput.text) { root.notice = "Paste a key first"; return }
+    request("POST", "/api/profile/key", {slug: profileSlug, provider: root.credentialProviderId(), key_name: name, key: secretInput.text}, function() {
+      secretInput.text = ""; root.notice = name + " saved for " + profileSlug; root.refresh()
     })
   }
   function clearProfileKey() {
     var name = keyEnvName()
     if (!name) return
-    request("POST", "/api/profile/key", {slug: root.selectedProfile, provider: providerInput.currentValue, key_name: name, clear: true}, function() {
-      profileKeyInput.text = ""; root.notice = name + " cleared"; root.refresh()
+    var secretInput = root.showProviderManager ? providerManagerKey : profileKeyInput
+    request("POST", "/api/profile/key", {slug: root.credentialProfileSlug(), provider: root.credentialProviderId(), key_name: name, clear: true}, function() {
+      secretInput.text = ""; root.notice = name + " cleared"; root.refresh()
     })
   }
   function taskMatches(t) {
@@ -597,6 +694,7 @@ ShellRoot {
   }
   function closeTopDialog() {
     if (root.showModels) root.showModels = false
+    else if (root.showProviderManager) root.showProviderManager = false
     else if (root.showDeleteProfile) root.showDeleteProfile = false
     else if (root.showCreateProfile) root.showCreateProfile = false
     else if (root.showPromptEditor) root.showPromptEditor = false
@@ -642,7 +740,7 @@ ShellRoot {
   Shortcut { sequence: "Ctrl+5"; onActivated: root.page = "Prompts" }
   Shortcut { sequence: "Ctrl+6"; onActivated: root.page = "Models & Providers" }
   Shortcut { sequence: "Ctrl+7"; onActivated: root.page = "Options" }
-  Shortcut { sequence: "Escape"; enabled: root.showModels || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor; onActivated: root.closeTopDialog() }
+  Shortcut { sequence: "Escape"; enabled: root.showModels || root.showProviderManager || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor; onActivated: root.closeTopDialog() }
   Timer { interval: 10000; running: root.pendingRequests === 0 && !root.modalOpen(); repeat: true; onTriggered: root.refresh() }
   Component.onCompleted: { root.refresh(); root.loadModelProviders() }
   onSelectedProfileChanged: {
@@ -1039,9 +1137,15 @@ ShellRoot {
                     Text { text: "http://127.0.0.1:18731  ·  local-only control API"; color: root.muted; font.pixelSize: 9 }
                     Text { text: "Provider credentials and model selection are managed separately for each profile."; color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; width: parent.width }
                     Item { width: 1; height: 1; Layout.fillHeight: true }
-                    Rectangle { width: 190; height: 34; color: root.raised; border.color: root.border
-                      Text { anchors.centerIn: parent; text: "Open Models & Providers"; color: root.accent; font.pixelSize: 9; font.bold: true }
-                      MouseArea { anchors.fill: parent; onClicked: root.page = "Models & Providers" }
+                    Row { spacing: 8
+                      Rectangle { width: 180; height: 34; color: root.raised; border.color: root.border
+                        Text { anchors.centerIn: parent; text: "Models & Providers"; color: root.accent; font.pixelSize: 9; font.bold: true }
+                        MouseArea { anchors.fill: parent; onClicked: root.page = "Models & Providers" }
+                      }
+                      Rectangle { width: 194; height: 34; color: root.selectedFill; border.color: root.border
+                        Text { anchors.centerIn: parent; text: "Manage provider connections"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                        MouseArea { anchors.fill: parent; onClicked: root.openProviderManager() }
+                      }
                     }
                   }
                 }
@@ -1505,6 +1609,101 @@ ShellRoot {
         }
       }
 
+      // Provider manager window
+      Rectangle { anchors.fill: parent; visible: root.showProviderManager; color: "#99070b10"; z: 39
+        MouseArea { anchors.fill: parent; onClicked: {} }
+        Rectangle { width: Math.min(1160, parent.width - 24); height: Math.min(790, parent.height - 24); radius: 2; color: root.surface; border.color: "#7f9db9"; anchors.centerIn: parent; MouseArea { anchors.fill: parent }
+          XpTitleBar { z: 2; anchors.top: parent.top; width: parent.width; caption: "Provider Connections"; darkMode: root.darkMode; onCloseRequested: root.showProviderManager = false }
+          Row { anchors.fill: parent; anchors.margins: 18; anchors.topMargin: 52; anchors.bottomMargin: 16; spacing: 14
+            Rectangle { width: 286; height: parent.height; color: root.raised; border.color: root.border
+              Column { anchors.fill: parent; anchors.margins: 12; spacing: 8
+                Row { width: parent.width; height: 24
+                  Text { text: "PROVIDERS"; color: root.blue; font.pixelSize: 9; font.bold: true; font.letterSpacing: 1 }
+                  Item { width: Math.max(0, parent.width - 120); height: 1 }
+                  Text { text: root.modelProviders.length + " installed"; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
+                }
+                Text { text: "Configure for profile"; color: root.muted; font.pixelSize: 8; font.bold: true }
+                ComboBox { id: providerManagerProfileInput; width: parent.width; height: 34; model: root.profiles.map(function(p) { return p.slug }); currentIndex: Math.max(0, root.profiles.map(function(p) { return p.slug }).indexOf(root.providerManagerProfile)); onActivated: { root.providerManagerProfile = currentText; root.selectManagedProvider(root.profileBySlug(currentText).provider || "auto") } contentItem: Text { text: providerManagerProfileInput.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                TextField { id: providerManagerSearch; width: parent.width; height: 34; leftPadding: 9; rightPadding: 9; placeholderText: "Find provider by name or ID…"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                ComboBox { id: providerManagerFilter; width: parent.width; height: 32; model: ["All providers", "Active for profile", "Configured", "Needs API key", "Hermes sign-in", "Custom endpoint"]; contentItem: Text { text: providerManagerFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                ListView { id: providerManagerList; width: parent.width; height: parent.height - 190; clip: true; spacing: 4; model: root.modelProviders.filter(function(provider) { return root.providerManagerMatches(provider) })
+                  ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                  delegate: Rectangle { required property var modelData; width: providerManagerList.width; height: 48; radius: 2; color: root.selectedManagedProvider === modelData.id ? root.selectedFill : root.surface; border.color: root.selectedManagedProvider === modelData.id ? root.accent : root.border
+                    Column { anchors.fill: parent; anchors.leftMargin: 9; anchors.rightMargin: 9; anchors.verticalCenter: parent.verticalCenter; spacing: 3
+                      Text { text: modelData.label; color: root.selectedManagedProvider === modelData.id ? "#ffffff" : root.text; font.pixelSize: 9; font.bold: true; elide: Text.ElideRight; width: parent.width }
+                      Text { text: modelData.id + "  ·  " + root.providerStatus(modelData); color: root.selectedManagedProvider === modelData.id ? "#d8e8ff" : root.muted; font.pixelSize: 8; elide: Text.ElideRight; width: parent.width }
+                    }
+                    MouseArea { anchors.fill: parent; onClicked: root.selectManagedProvider(modelData.id) }
+                  }
+                }
+                Row { width: parent.width; height: 30; spacing: 7
+                  Text { text: "Provider list comes from this Hermes install."; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter; elide: Text.ElideRight; width: parent.width - 40 }
+                  Rectangle { width: 28; height: 28; color: root.surface; border.color: root.border
+                    Text { anchors.centerIn: parent; text: "↻"; color: root.accent; font.pixelSize: 13 }
+                    MouseArea { anchors.fill: parent; onClicked: root.loadModelProviders() }
+                  }
+                }
+              }
+            }
+            Rectangle { width: parent.width - 300; height: parent.height; color: root.surface; border.color: root.border
+              Column { anchors.fill: parent; anchors.margins: 20; spacing: 12
+                Row { width: parent.width; height: 40; spacing: 8
+                  Column { spacing: 3
+                    Text { text: root.providerEntry(root.selectedManagedProvider).label || "Choose a provider"; color: root.text; font.pixelSize: 17; font.bold: true }
+                    Text { text: root.selectedManagedProvider + "  ·  " + root.providerStatus(root.providerEntry(root.selectedManagedProvider)); color: root.accent; font.pixelSize: 9 }
+                  }
+                  Item { width: Math.max(0, parent.width - 280); height: 1 }
+                  Rectangle { visible: root.selectedManagedProvider === "openrouter"; width: 116; height: 34; radius: 2; color: root.accent
+                    Text { anchors.centerIn: parent; text: "Browse models"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                    MouseArea { anchors.fill: parent; onClicked: { root.showModels = true; if (!root.modelCatalog.length) root.loadModelCatalog(false) } }
+                  }
+                }
+                Text { text: root.providerEntry(root.selectedManagedProvider).description || root.providerDescription(); color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; width: parent.width; height: 34 }
+                Rectangle { width: parent.width; height: 1; color: root.border }
+                Row { width: parent.width; height: 20
+                  Text { width: Math.max(120, parent.width - profileApplyLabel.implicitWidth - 12); text: "MODEL & ROUTING"; color: root.blue; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.8 }
+                  Item { width: 12; height: 1 }
+                  Text { id: profileApplyLabel; text: "Applies to " + root.providerManagerProfile; color: root.muted; font.pixelSize: 8 }
+                }
+                Text { text: "Default model ID"; color: root.muted; font.pixelSize: 8; font.bold: true }
+                TextField { id: providerManagerModel; width: parent.width; height: 38; leftPadding: 10; rightPadding: 10; color: root.text; font.pixelSize: 10; placeholderText: root.selectedManagedProvider === "openrouter" ? "provider/model-name" : "Model ID for this provider"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                Text { visible: root.selectedManagedProvider === "custom"; text: "OPENAI-COMPATIBLE ENDPOINT URL"; color: root.muted; font.pixelSize: 8; font.bold: true }
+                TextField { id: providerManagerBaseUrl; visible: root.selectedManagedProvider === "custom"; width: parent.width; height: 36; leftPadding: 10; rightPadding: 10; color: root.text; font.pixelSize: 9; placeholderText: "http://localhost:11434/v1"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                Rectangle { width: parent.width; height: 1; color: root.border }
+                Row { width: parent.width; height: 22
+                  Text { id: credentialLabel; width: Math.max(120, parent.width - credentialStatus.implicitWidth - 12); text: root.keyEnvName() ? (root.selectedManagedProvider === "custom" ? "CUSTOM ENDPOINT API KEY" : root.keyEnvName()) : "HERMES-MANAGED AUTHENTICATION"; color: root.blue; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.5; elide: Text.ElideRight; anchors.verticalCenter: parent.verticalCenter }
+                  Item { width: 12; height: 1 }
+                  Text { id: credentialStatus; text: !root.keyEnvName() ? (root.selectedManagedProvider === "auto" ? "No key required" : "Use Hermes CLI") : (root.providerCredentialConfigured() ? "Configured · value hidden" : "Not configured"); color: root.keyEnvName() ? (root.providerCredentialConfigured() ? root.accent : root.amber) : root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
+                }
+                ComboBox { id: providerManagerCredentialInput; visible: root.providerCredentialOptions(root.selectedManagedProvider).length > 1; width: Math.min(320, parent.width); height: 32; model: root.providerCredentialOptions(root.selectedManagedProvider); currentIndex: Math.max(0, root.providerCredentialOptions(root.selectedManagedProvider).indexOf(root.managedCredentialName)); onActivated: root.managedCredentialName = currentText; contentItem: Text { text: providerManagerCredentialInput.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                TextField { id: providerManagerKey; visible: !!root.keyEnvName(); width: parent.width; height: 38; leftPadding: 10; rightPadding: 10; echoMode: TextInput.Password; color: root.text; font.pixelSize: 10; placeholderText: "Paste or replace the key for this profile"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+                Row { visible: !!root.keyEnvName(); width: parent.width; spacing: 8
+                  Rectangle { width: 116; height: 34; radius: 2; color: root.accent
+                    Text { anchors.centerIn: parent; text: "Save API key"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                    MouseArea { anchors.fill: parent; enabled: root.selectedManagedProvider !== "custom" || root.profileBySlug(root.providerManagerProfile).provider === "custom"; onClicked: root.saveProfileKey() }
+                  }
+                  Rectangle { width: 90; height: 34; radius: 2; color: root.raised; border.color: root.border
+                    Text { anchors.centerIn: parent; text: "Clear key"; color: root.red; font.pixelSize: 9 }
+                    MouseArea { anchors.fill: parent; enabled: root.providerCredentialConfigured(); onClicked: root.clearProfileKey() }
+                  }
+                  Text { visible: root.selectedManagedProvider === "custom" && root.profileBySlug(root.providerManagerProfile).provider !== "custom"; text: "Set Custom as the profile provider before saving its key."; color: root.amber; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
+                }
+                Text { visible: !root.keyEnvName(); text: root.providerDescription() + ". Use the Hermes CLI: hermes model. Hermes-managed credentials stay in its own secure store."; color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; width: parent.width }
+                Text { text: (root.providerEntry(root.selectedManagedProvider).env_vars || []).length ? "Credential variables: " + root.providerEntry(root.selectedManagedProvider).env_vars.join(", ") : "This provider does not declare API-key environment variables."; color: root.muted; font.pixelSize: 8; wrapMode: Text.WordWrap; width: parent.width }
+                Item { width: 1; height: 1; Layout.fillHeight: true }
+                Row { width: parent.width; spacing: 8
+                  Rectangle { width: 166; height: 38; radius: 2; color: root.selectedFill; border.color: root.border
+                    Text { anchors.centerIn: parent; text: "Use provider for profile"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                    MouseArea { anchors.fill: parent; onClicked: root.saveManagedProvider() }
+                  }
+                  Text { text: "Provider selection, model, and credentials are saved for the chosen profile only."; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter; wrapMode: Text.WordWrap; width: parent.width - 180 }
+                }
+              }
+            }
+          }
+        }
+      }
+
       // OpenRouter model catalog
       Rectangle { anchors.fill: parent; visible: root.showModels; color: "#99070b10"; z: 40
         MouseArea { anchors.fill: parent; onClicked: {} }
@@ -1573,7 +1772,7 @@ ShellRoot {
               }
               ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
               delegate: Rectangle { required property var modelData; width: catalogList.width; height: modelData.is_placeholder ? 0 : 74; visible: !modelData.is_placeholder; radius: 2; color: modelHover.containsMouse ? root.hoverFill : root.surface; border.color: root.border
-                MouseArea { id: modelHover; anchors.fill: parent; hoverEnabled: true; onClicked: { modelInput.text = modelData.id; providerInput.currentIndex = root.providerIndex("openrouter"); baseUrlInput.text = ""; root.showModels = false; root.notice = "Selected " + modelData.id + " · save profile to apply" } }
+              MouseArea { id: modelHover; anchors.fill: parent; hoverEnabled: true; onClicked: root.chooseCatalogModel(modelData.id) }
                 Row { anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 8
                   Column { width: parent.width * 0.55 - 8; anchors.verticalCenter: parent.verticalCenter; spacing: 5
                     Text { text: modelData.name; color: root.text; font.pixelSize: 10; font.bold: true; elide: Text.ElideRight; width: parent.width }
@@ -1592,7 +1791,7 @@ ShellRoot {
                   }
                   Rectangle { width: 75; height: 30; radius: 2; color: root.accent; anchors.verticalCenter: parent.verticalCenter
                     Text { anchors.centerIn: parent; text: "Use model"; color: "#ffffff"; font.pixelSize: 8; font.bold: true }
-                    MouseArea { anchors.fill: parent; onClicked: { modelInput.text = modelData.id; providerInput.currentIndex = root.providerIndex("openrouter"); baseUrlInput.text = ""; root.showModels = false; root.notice = "Selected " + modelData.id + " · save profile to apply" } }
+                    MouseArea { anchors.fill: parent; onClicked: root.chooseCatalogModel(modelData.id) }
                   }
                 }
               }
