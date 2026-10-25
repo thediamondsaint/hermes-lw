@@ -567,6 +567,7 @@ def dashboard(board: str = "") -> dict:
         task["allow_all_profiles"] = False
         task["allowed_profiles"] = estimate.get("allowed_profiles", [])
         task["profile_budgets"] = estimate.get("profile_budgets", {})
+        task["max_runtime_seconds"] = int(estimate.get("max_runtime_seconds", 0) or 0)
         task["has_estimate"] = "cost" in estimate
         cards.append(task)
     project = next((p for p in projects if p["slug"] == board), {})
@@ -1016,6 +1017,13 @@ class Handler(BaseHTTPRequestHandler):
                 if "cost" in payload:
                     payload["cost"] = nonnegative_number(payload.get("cost", 0), "Cost estimate")
                 payload["effort_hours"] = nonnegative_number(payload.get("effort_hours", 0), "Effort estimate")
+                try:
+                    runtime_seconds = int(payload.get("max_runtime_seconds", 0))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("Maximum runtime must be a whole number of seconds") from exc
+                if runtime_seconds < 60 or runtime_seconds > 30 * 24 * 60 * 60:
+                    raise ValueError("Choose a maximum runtime between 1 minute and 30 days")
+                payload["max_runtime_seconds"] = runtime_seconds
                 allowed = payload.get("allowed_profiles", [])
                 if not isinstance(allowed, list): raise ValueError("Allowed profiles must be a list")
                 known_profiles = set(profile_slugs())
@@ -1047,6 +1055,7 @@ class Handler(BaseHTTPRequestHandler):
                 priority = int(payload.get("priority", 0))
                 if not 0 <= priority <= 4: raise ValueError("Priority must be between 0 and 4")
                 args += ["--priority", str(priority)]
+                args += ["--max-runtime", f"{runtime_seconds}s", "--max-retries", "1"]
                 if payload.get("parent"): args += ["--parent", str(payload["parent"])]
                 result = cmd(*args)
                 created = json.loads(result) if result.startswith(("{", "[")) else {}
@@ -1296,6 +1305,11 @@ class Handler(BaseHTTPRequestHandler):
         if "note" in p: record["note"] = str(p.get("note", ""))
         if "due_date" in p: record["due_date"] = iso_date(p.get("due_date", ""))
         if "effort_hours" in p: record["effort_hours"] = nonnegative_number(p.get("effort_hours", 0), "Effort estimate")
+        if "max_runtime_seconds" in p:
+            try: runtime_seconds = int(p.get("max_runtime_seconds", 0))
+            except (TypeError, ValueError) as exc: raise ValueError("Maximum runtime must be a whole number of seconds") from exc
+            if runtime_seconds < 60 or runtime_seconds > 30 * 24 * 60 * 60: raise ValueError("Choose a maximum runtime between 1 minute and 30 days")
+            record["max_runtime_seconds"] = runtime_seconds
         if "tags" in p:
             tags = p.get("tags", [])
             if isinstance(tags, str): tags = [tag.strip() for tag in tags.split(",")]

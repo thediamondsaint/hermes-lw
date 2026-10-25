@@ -658,7 +658,7 @@ ShellRoot {
   function prepareNewTask() {
     var useSuggestions = root.aiProfilesEnabled
     newTitle.text = ""; newBody.text = ""; newPriority.text = "0"
-    newDue.text = ""; newEffort.text = "0"; newCost.text = ""; newTags.text = ""
+    newDue.text = ""; newEffort.text = "0"; newCost.text = ""; newRuntime.text = ""; newTags.text = ""
     newAssignee.currentIndex = 0; newWorkspace.currentIndex = 0; taskTemplate.currentIndex = 0
     root.newAllowedProfiles = []
     root.newProfileBudgets = ({})
@@ -677,9 +677,10 @@ ShellRoot {
     var payload = {board: root.currentBoard, title: newTitle.text, body: newBody.text,
       assignee: newAssignee.currentText === "Unassigned" ? "" : newAssignee.currentText,
       priority: Math.min(4, Math.max(0, Number(newPriority.text) || 0)), workspace: newWorkspace.currentText,
-      due_date: newDue.text, effort_hours: Number(newEffort.text) || 0, tags: newTags.text,
+      due_date: newDue.text, effort_hours: Number(newEffort.text) || 0, max_runtime_seconds: Math.round(Number(newRuntime.text) * 60), tags: newTags.text,
       allowed_profiles: root.newAllowedProfiles, profile_budgets: root.newProfileBudgets}
     if (newCost.text.trim()) payload.cost = Number(newCost.text) || 0
+    if (!isFinite(payload.max_runtime_seconds) || payload.max_runtime_seconds < 60) { root.notice = "Set a runtime ceiling of at least one minute"; return }
     if (!payload.allowed_profiles.length) { root.notice = "Choose at least one eligible profile"; return }
     for (var i = 0; i < payload.allowed_profiles.length; ++i) {
       if (root.newProfileBudgets[payload.allowed_profiles[i]] === undefined || Number(root.newProfileBudgets[payload.allowed_profiles[i]]) <= 0) { root.notice = "Set a positive budget for every selected profile"; return }
@@ -1763,6 +1764,10 @@ ShellRoot {
               Column { width: parent.width * 0.5 - 6; spacing: 6; Text { text: "WORKSPACE"; color: root.muted; font.pixelSize: 9; font.bold: true } ComboBox { id: newWorkspace; width: parent.width; height: 38; model: ["scratch", "worktree"] } }
               Column { width: parent.width * 0.5 - 6; spacing: 6; Text { text: "COST ESTIMATE · USD"; color: root.muted; font.pixelSize: 9; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: newCost; width: parent.width; height: 38; placeholderText: "Planning estimate"; color: root.text; inputMethodHints: Qt.ImhFormattedNumbersOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
             }
+            Row { width: parent.width; spacing: 12
+              Column { width: parent.width * 0.5 - 6; spacing: 5; Text { text: "MAX RUNTIME · MINUTES"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: newRuntime; width: parent.width; height: 34; placeholderText: "Required (e.g. 60)"; color: root.text; inputMethodHints: Qt.ImhDigitsOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
+              Text { width: parent.width * 0.5 - 6; text: "One attempt only. A timeout stops the worker and blocks retries. This bounds run time, not dollars."; color: root.muted; font.pixelSize: 8; wrapMode: Text.WordWrap; anchors.verticalCenter: parent.verticalCenter }
+            }
             Row { width: parent.width; spacing: 8
               Column { width: parent.width * .30 - 6; spacing: 4; Text { text: "DUE DATE"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: newDue; width: parent.width; height: 34; placeholderText: "YYYY-MM-DD"; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
               Column { width: parent.width * .25 - 6; spacing: 4; Text { text: "EFFORT · HOURS"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { leftPadding: 9; rightPadding: 9; id: newEffort; width: parent.width; height: 34; text: "0"; color: root.text; font.pixelSize: 9; inputMethodHints: Qt.ImhFormattedNumbersOnly; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
@@ -1827,6 +1832,7 @@ ShellRoot {
             Column { id: taskDetailContent; width: parent.width; spacing: 9
             Row { width: parent.width; Column { spacing: 5; Text { text: "Task details"; color: root.text; font.pixelSize: 18; font.bold: true } Text { text: root.selectedTask ? root.selectedTask.id : ""; color: root.muted; font.family: "monospace"; font.pixelSize: 9 } } Item { width: 1; height: 1; Layout.fillWidth: true } Item { width: 24; height: 20 } }
             Text { width: parent.width; text: root.selectedTask ? root.selectedTask.title : ""; color: root.text; font.pixelSize: 14; font.bold: true; wrapMode: Text.WordWrap }
+            Text { visible: !!(root.selectedTask && Number(root.selectedTask.max_runtime_seconds) > 0); width: parent.width; text: root.selectedTask && Number(root.selectedTask.max_runtime_seconds) > 0 ? "Runtime limit · " + Math.round(Number(root.selectedTask.max_runtime_seconds) / 60) + " min · one attempt; timeout blocks retry" : ""; color: root.amber; font.pixelSize: 8; wrapMode: Text.WordWrap }
             Text { width: parent.width; height: 78; text: root.selectedTask ? (root.selectedTask.body || "No description added.") : ""; color: root.text; font.pixelSize: 10; wrapMode: Text.WordWrap; elide: Text.ElideRight }
             Rectangle { width: parent.width; height: 1; color: root.border }
             Row { width: parent.width; spacing: 16

@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Hermes LW: a Quickshell desktop control center for Hermes profiles, providers, models, projects, plugins and Kanban tasks.">
+  <title>Hermes LW · Desktop Control Center</title>
+  <style>
+    :root { color-scheme: light; --ink:#14283d; --muted:#53677b; --blue:#1768bd; --sky:#dceeff; --panel:#fff; --line:#a9c3dd; --bg:#edf4fb; --navy:#123c70; --green:#15754a; --gold:#8a5c04; --red:#9d3030; --shadow:0 8px 24px #1938581a; }
+    * { box-sizing:border-box }
+    html { scroll-behavior:smooth }
+    body { margin:0; background:linear-gradient(140deg,#dceaf7 0,#f7f9fb 45%,#e5f0fa 100%); color:var(--ink); font:16px/1.62 system-ui,-apple-system,"Segoe UI",sans-serif }
+    a { color:#125da9; text-decoration-thickness:1px; text-underline-offset:3px }
+    a:hover { color:#003f85 }
+    .hero { background:linear-gradient(130deg,#0a2e58,#176fc1 62%,#5ca8ee); color:#fff; padding:54px max(24px,calc((100vw - 1160px)/2)) 48px; border-bottom:5px solid #a7d4ff }
+    .eyebrow { color:#c4e2ff; text-transform:uppercase; letter-spacing:.14em; font-size:.76rem; font-weight:800 }
+    h1 { font-size:clamp(2.3rem,5vw,4.4rem); letter-spacing:-.045em; line-height:1.02; margin:14px 0 }
+    .hero p { max-width:790px; color:#e5f2ff; font-size:1.12rem; margin:0 }
+    .actions { display:flex; gap:12px; flex-wrap:wrap; margin-top:25px }
+    .button { display:inline-flex; align-items:center; justify-content:center; min-height:42px; padding:9px 16px; border-radius:7px; background:#fff; color:#104d8d; font-weight:750; text-decoration:none; box-shadow:0 3px 0 #b7d6f3 }
+    .button.secondary { background:#12395f;color:#fff;box-shadow:0 3px 0 #082545;border:1px solid #71b5f2 }
+    .shell { max-width:1200px; margin:auto; padding:24px }
+    .layout { display:grid; grid-template-columns:220px minmax(0,1fr); gap:24px; align-items:start }
+    .side { position:sticky; top:18px; padding:16px; background:#f8fbff;border:1px solid var(--line);border-radius:9px;box-shadow:var(--shadow) }
+    .side b { display:block; margin:2px 0 12px;color:var(--navy) }
+    .side a { display:block; padding:5px 7px; margin:2px 0; border-radius:5px; font-size:.9rem;text-decoration:none }
+    .side a:hover { background:#e2effb }
+    main { min-width:0 }
+    section { scroll-margin-top:20px; margin:0 0 30px; padding:25px; background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:var(--shadow) }
+    h2 { margin:0 0 8px; color:var(--navy); font-size:1.6rem; letter-spacing:-.02em }
+    h3 { margin:21px 0 6px; color:#183d65; font-size:1.12rem }
+    p { margin:9px 0 }
+    .lead { color:var(--muted); margin:0 0 18px }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px }
+    .card { min-width:0; padding:15px; background:#f5f9fd; border:1px solid #c5d7e8; border-radius:8px }
+    .card h3 { margin:0 0 5px }
+    .tag { display:inline-block; padding:2px 8px; border-radius:99px; margin:3px 4px 3px 0; background:#e2effb;color:#144f89;font-size:.77rem;font-weight:750 }
+    .notice { margin:15px 0; padding:14px 16px; border-left:4px solid #2e75bb; border-radius:4px; background:#edf6ff }
+    .notice.warn { border-color:#c18a19;background:#fff8e9 }
+    .notice.danger { border-color:#b43c3c;background:#fff0f0 }
+    figure { margin:0; min-width:0 }
+    figure a { display:block; overflow:hidden; border:1px solid #91aeca;border-radius:7px;background:#12243a }
+    figure img { display:block;width:100%;height:auto;transition:transform .2s ease }
+    figure a:hover img { transform:scale(1.015) }
+    figcaption { color:var(--muted); font-size:.88rem; padding:9px 2px 0 }
+    .shots { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px }
+    .step { display:grid;grid-template-columns:36px 1fr;gap:12px;margin:17px 0 }
+    .num { width:32px;height:32px;display:grid;place-items:center;border-radius:50%;background:#dceeff;color:#0d4f91;font-weight:850 }
+    .step h3 { margin:0 0 3px }
+    code,pre { font-family:ui-monospace,SFMono-Regular,Consolas,monospace }
+    code { overflow-wrap:anywhere; padding:1px 4px;border-radius:3px;background:#edf2f7;color:#173a5d;font-size:.9em }
+    pre { overflow:auto;padding:14px;background:#10243a;color:#d8eaff;border-radius:7px;font-size:.87rem }
+    details { margin:10px 0;border:1px solid #c5d7e8;border-radius:7px;background:#fbfdff }
+    summary { cursor:pointer;padding:12px 14px;color:#164d83;font-weight:750 }
+    details .inside { padding:0 15px 15px }
+    table { width:100%;border-collapse:collapse;margin:12px 0;font-size:.93rem }
+    th,td { text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid #d2dfeb }
+    th { color:#194977;background:#f0f6fc }
+    .check { color:var(--green);font-weight:800 }
+    .caution { color:var(--gold);font-weight:800 }
+    footer { max-width:1200px;margin:0 auto;padding:8px 24px 42px;color:var(--muted);font-size:.9rem }
+    @media(max-width:900px) { .layout{grid-template-columns:1fr}.side{position:static;display:flex;flex-wrap:wrap;gap:3px 8px}.side b{width:100%}.side a{padding:4px 6px}.grid,.shots{grid-template-columns:1fr}section{padding:19px}.shell{padding:14px} }
+    @media(prefers-reduced-motion:reduce) { html{scroll-behavior:auto}*{transition:none!important} }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="eyebrow">Quickshell · Hyprland · Hermes Agent</div>
+    <h1>Hermes LW</h1>
+    <p>A Windows-inspired desktop control center for Hermes profiles, providers, models, projects, plugins and the Kanban task board. Built for local Linux desktops with Quickshell.</p>
+    <div class="actions">
+      <a class="button" href="https://github.com/thediamondsaint/hermes-lw">View source on GitHub</a>
+      <a class="button secondary" href="#install">Install and launch</a>
+      <a class="button secondary" href="cost-enforcement.html">Cost enforcement research</a>
+    </div>
+  </header>
+
+  <div class="shell layout">
+    <nav class="side" aria-label="Page sections">
+      <b>On this page</b>
+      <a href="#overview">What it does</a><a href="#screenshots">Screenshots</a><a href="#install">Install</a><a href="#first-run">First run</a>
+      <a href="#profiles">Profiles</a><a href="#providers">Providers and keys</a><a href="#models">Model catalog</a><a href="#advisor">Task Advisor</a>
+      <a href="#tasks">Tasks and profile access</a><a href="#projects">Projects</a><a href="#extensions">Plugins and tools</a><a href="#cost">Spend limits</a><a href="#troubleshooting">Troubleshooting</a>
+    </nav>
+
+    <main>
+      <section id="overview">
+        <h2>What Hermes LW does</h2>
+        <p class="lead">It gives you a visual control surface for the Hermes installation already on your machine. Hermes LW reads and updates Hermes profile files and boards through the Hermes CLI; Quickshell renders the desktop interface.</p>
+        <div class="grid">
+          <article class="card"><h3>Profiles</h3><p>Create, clone, edit, pause, resume, and delete profiles. Change model, provider, reasoning level, API credentials, and complete <code>SOUL.md</code> personality.</p></article>
+          <article class="card"><h3>Models</h3><p>Browse the selected provider’s catalog, search by model and capability, group by publisher or modality, filter input/output cost independently, and favorite models.</p></article>
+          <article class="card"><h3>Work</h3><p>Organize cards by project. Track owners, dates, estimates, effort, tags, dependencies, status, and per-card profile eligibility.</p></article>
+          <article class="card"><h3>Extensions</h3><p>Manage Hermes plugins, platform toolsets, and MCP connections per profile. Use a local process or remote HTTP server.</p></article>
+        </div>
+        <div class="notice"><b>Local-first.</b> The control API binds to <code>127.0.0.1:18731</code>. Provider keys are stored in profile-local files with owner-only permissions; keys are not displayed in the app.</div>
+      </section>
+
+      <section id="screenshots">
+        <h2>Screenshots</h2>
+        <p class="lead">Click any image to open it at full resolution. The demo data shown in these captures uses fictional profiles and tasks.</p>
+        <div class="shots">
+          <figure><a href="assets/screenshots/overview.png"><img src="assets/screenshots/overview.png" alt="Hermes LW overview dashboard with projects, profile status, and tasks" loading="lazy"></a><figcaption><b>Overview.</b> See project activity, profile status, and recent tasks at a glance.</figcaption></figure>
+          <figure><a href="assets/screenshots/kanban.png"><img src="assets/screenshots/kanban.png" alt="Kanban board with task lanes and profile assignment controls" loading="lazy"></a><figcaption><b>Kanban.</b> Search and filter tasks, move work across lanes, and assign profiles.</figcaption></figure>
+          <figure><a href="assets/screenshots/profiles.png"><img src="assets/screenshots/profiles.png" alt="Hermes profile editor with profile list and personality editor" loading="lazy"></a><figcaption><b>Profiles.</b> Select a profile, review its settings, and edit its personality.</figcaption></figure>
+          <figure><a href="assets/screenshots/model-catalog.png"><img src="assets/screenshots/model-catalog.png" alt="Searchable model catalog grouped and filtered by cost and capability" loading="lazy"></a><figcaption><b>Model catalog.</b> Browse models with search, grouping, modality and cost filters.</figcaption></figure>
+          <figure><a href="assets/screenshots/provider-connections.png"><img src="assets/screenshots/provider-connections.png" alt="Provider connections window for profile-specific API keys and model configuration" loading="lazy"></a><figcaption><b>Provider Connections.</b> Configure backends and profile-scoped credentials.</figcaption></figure>
+          <figure><a href="assets/screenshots/plugins-tools.png"><img src="assets/screenshots/plugins-tools.png" alt="Profile-scoped plugins, tools, and MCP apps" loading="lazy"></a><figcaption><b>Plugins and Tools.</b> Manage tools and MCP apps for the selected profile.</figcaption></figure>
+          <figure><a href="assets/screenshots/options.png"><img src="assets/screenshots/options.png" alt="Hermes LW options page with global settings and shortcuts" loading="lazy"></a><figcaption><b>Options.</b> Change global preferences and review local connection details.</figcaption></figure>
+        </div>
+        <div class="notice warn"><b>Current screen note:</b> the provided screenshot set predates the new Task Advisor and the latest task runtime-limit form. The README and screenshots in the repository are the source assets; the live guide will be updated as fresh captures are available.</div>
+      </section>
+
+      <section id="install">
+        <h2>Install and launch</h2>
+        <p class="lead">Hermes LW is a source checkout, not an installer package. Run it in a session that already has Hermes Agent and Quickshell configured.</p>
+        <div class="grid">
+          <article class="card"><h3>Requirements</h3><ul><li>Linux desktop session running Hyprland</li><li>Quickshell (<code>qs</code> command)</li><li>Hermes Agent CLI (<code>hermes</code>)</li><li>Python 3 and PyYAML</li></ul></article>
+          <article class="card"><h3>Get the repo</h3><pre>git clone https://github.com/thediamondsaint/hermes-lw.git
+cd hermes-lw
+./launch.sh</pre><p>The launcher starts the local Python API if it is not already running, then launches the Quickshell UI. It adds a temporary floating-window rule only on Lua-configured Omarchy sessions; it does not edit Hyprland config.</p></article>
+        </div>
+        <div class="notice warn">Use a real desktop session; Hermes LW is not a browser-only web app. The app communicates with a local Hermes CLI and reads Hermes files under <code>~/.hermes</code>.</div>
+      </section>
+
+      <section id="first-run">
+        <h2>First run</h2>
+        <div class="step"><div class="num">1</div><div><h3>Check the connection</h3><p>The status bar should say <b>Ready</b>. If it says disconnected, confirm the backend process is running and Hermes is available on your <code>PATH</code>.</p></div></div>
+        <div class="step"><div class="num">2</div><div><h3>Select a profile</h3><p>Choose an existing profile from the sidebar, or create a new one. Profile-specific settings are edited in <b>Profiles</b> or <b>Models &amp; Providers</b>.</p></div></div>
+        <div class="step"><div class="num">3</div><div><h3>Set a provider</h3><p>Open <b>Provider Connections</b> from Options, select the profile and provider, enter its model ID and key if required, then save. OAuth-backed providers use Hermes’ own login flow.</p></div></div>
+        <div class="step"><div class="num">4</div><div><h3>Browse models and create a project</h3><p>Open the model catalog to check the selected backend’s available models. Create a project to get an isolated Hermes Kanban board, then add a task.</p></div></div>
+      </section>
+
+      <section id="profiles">
+        <h2>Profiles: create, edit and clone</h2>
+        <p>Profiles are Hermes’ named agent configurations. The sidebar list shows active/paused state and lets you switch profiles without leaving the app.</p>
+        <details open><summary>Create a profile</summary><div class="inside"><ol><li>Choose <b>Add profile</b> in the toolbar.</li><li>Enter a profile name and role. Names become Hermes profile slugs; use a short lowercase name.</li><li>Generate or write its personality, then review it before saving.</li><li>Choose the model and provider under <b>Models &amp; Providers</b>.</li></ol></div></details>
+        <details><summary>Clone an existing profile</summary><div class="inside"><p>Open the profile creation dialog and choose a clone source. A settings clone copies its model and agent configuration; a full clone also copies personality and other profile state. Review copied credentials before relying on them. Hermes LW never displays secret values.</p></div></details>
+        <details><summary>Pause, set manager, or delete</summary><div class="inside"><p>Use the profile controls to pause/resume it for assignments from Hermes LW, set the manager profile, or delete a non-default profile. Pause prevents new assignments through this app; it does not stop an already-running Hermes process.</p></div></details>
+        <div class="notice">A profile’s <code>SOUL.md</code> is its complete personality prompt. Save changes in the profile editor to write the personality into Hermes’ profile directory.</div>
+      </section>
+
+      <section id="providers">
+        <h2>Providers and API keys</h2>
+        <p>Provider settings belong to a profile, so different profiles can use different backends and credentials.</p>
+        <div class="step"><div class="num">1</div><div><h3>Open Provider Connections</h3><p>Use the Options page and select <b>Provider Connections</b>. Choose the profile whose credentials you are changing.</p></div></div>
+        <div class="step"><div class="num">2</div><div><h3>Choose an installed provider</h3><p>The provider list comes from the Hermes version installed on the machine. Select the backend and enter its model ID or custom-compatible endpoint where needed.</p></div></div>
+        <div class="step"><div class="num">3</div><div><h3>Save the key to that profile</h3><p>Paste the provider key into the key field and save it. Hermes LW writes it to that profile’s private <code>.env</code>; the value does not come back to the UI. To change it, enter the replacement. To remove it, use Clear.</p></div></div>
+        <div class="notice warn"><b>Keep API keys private.</b> Never paste a provider key into a task description, a prompt, a screenshot, or a public issue. Use the provider’s own dashboard to revoke a key if it may have been exposed.</div>
+      </section>
+
+      <section id="models">
+        <h2>Model catalog</h2>
+        <p>The catalog follows the selected provider. OpenRouter exposes published per-model input and output token prices; other Hermes providers may return model IDs without price metadata.</p>
+        <div class="grid">
+          <article class="card"><h3>Find</h3><p>Enter multiple search terms to match model name, ID, publisher, description, modalities, and capabilities. Use the provider selector to load another provider’s model list.</p></article>
+          <article class="card"><h3>Group and narrow</h3><p>Group by use, publisher, input cost, output cost, context, or modality. Filter input and output prices separately; use Collapse all / Expand all when a group has many rows.</p></article>
+          <article class="card"><h3>Compare estimates</h3><p>Set the sample input and output token counts. A model’s displayed sample estimate multiplies the published rates by those token counts. It is for comparison, not a quote or a task limit.</p></article>
+          <article class="card"><h3>Apply a model</h3><p>Choose a model from the catalog. The profile editor still needs you to save the profile before the new setting becomes active.</p></article>
+        </div>
+      </section>
+
+      <section id="advisor">
+        <h2>Task Advisor and AI/Profiles</h2>
+        <h3>Task Advisor</h3><p>Pick a task type, enter a problem, and set a maximum sample estimate. The Advisor filters the selected provider’s known-priced catalog and ranks candidates by use, sample cost, and context. It drafts a reusable prompt for code audits, implementation, research, writing, and general work. Save it to Prompts or start a task with it.</p>
+        <div class="notice warn">The Advisor does not call a model. Its price comparison uses a fixed sample of 4,000 input and 1,200 output tokens; actual task length, provider routing, cache pricing, tools and modalities can change charges.</div>
+        <h3>AI/Profiles checkbox</h3><p>On the Kanban page, check <b>AI/Profiles</b> beside New Task. The current prototype locally matches task text against profile names, model IDs, descriptions and personalities. It shows suggestions but never selects one. Check the exact profiles you authorize in the task form.</p>
+        <p>This feature currently uses heuristics, not an external AI model; it creates no inference request or inference charge. It does not make a new profile or rewrite a personality automatically.</p>
+      </section>
+
+      <section id="tasks">
+        <h2>Tasks and explicit profile access</h2>
+        <p>Hermes LW’s task form records who is allowed to be assigned, per-profile planning budgets, and a finite runtime for new tasks.</p>
+        <div class="step"><div class="num">1</div><div><h3>Describe the work</h3><p>Enter a short title and add context, links, acceptance criteria, due date, priority, tags, workspace and cost estimate. The cost estimate is a planning number.</p></div></div>
+        <div class="step"><div class="num">2</div><div><h3>Check each allowed profile</h3><p>No profile is checked by default. Each checked profile is added to the task allowlist. The optional assignee must also be one of those profiles. If nobody is checked, the app refuses task creation.</p></div></div>
+        <div class="step"><div class="num">3</div><div><h3>Enter the per-profile planning budget</h3><p>Each allowed profile needs a positive dollar amount. The form saves it with the task to record your planned allocation. It is not enforced by Hermes or the provider.</p></div></div>
+        <div class="step"><div class="num">4</div><div><h3>Set the maximum runtime</h3><p>New tasks require a runtime ceiling of at least one minute. Hermes LW passes this as Hermes’ per-task <code>--max-runtime</code> and sets the task to one attempt, so a timeout blocks rather than repeatedly restarting the worker.</p></div></div>
+        <div class="notice danger"><b>Important security boundary.</b> Hermes LW enforces its saved allowlist when creating and assigning through this app. Hermes CLI, gateways, scripts, or other clients can edit the shared Kanban board outside Hermes LW. The per-profile dollar fields are not spend controls. See the <a href="cost-enforcement.html">cost enforcement research</a> for OpenRouter key caps and per-task gateway options.</div>
+      </section>
+
+      <section id="projects">
+        <h2>Projects and the Kanban board</h2>
+        <p>Projects are separate Hermes Kanban boards. Create one from the toolbar, give it a name and slug, then open it from the sidebar or project selector.</p>
+        <ul><li>Filter cards by status, assignee, title, tags and IDs.</li><li>Save named views for recurring filters.</li><li>Set project owner, due date, color, description and budget.</li><li>Use task templates for recurring shapes of work.</li><li>Use bulk assignment or completion on selected cards.</li><li>Add comments, dependencies, due dates, effort and cost estimates in Task Details.</li><li>Export a project summary to <code>~/Downloads</code>.</li></ul>
+        <p>Hermes owns the canonical task body and history. Hermes LW stores its additional planning metadata in <code>~/.local/share/hermes-control/estimates.json</code>.</p>
+      </section>
+
+      <section id="extensions">
+        <h2>Plugins, tools and MCP apps</h2>
+        <p>Open <b>Plugins &amp; Tools</b>, select a Hermes profile, then choose Plugins, Tools, or MCP Apps. Plugins and toolsets are profile-scoped: enabling them for one profile does not enable them for every profile.</p>
+        <details><summary>Install or enable a plugin</summary><div class="inside"><p>Search the available plugin list, inspect its source/trust information, install it, and enable it for the current profile. Plugin install does not mean all tool overrides are allowed; that is a separate explicit setting.</p></div></details>
+        <details><summary>Add an MCP server</summary><div class="inside"><p>Choose local stdio for a process on this machine, or HTTP for a remote server. Enter the endpoint/command and any credential, then test the connection. Remote bearer tokens are kept in that profile’s private environment file. Use HTTPS for remote credentials.</p></div></details>
+        <div class="notice warn">Only install tools and plugins you trust. An enabled agent tool may read or modify files and call external services using the profile’s permissions.</div>
+      </section>
+
+      <section id="cost">
+        <h2>Cost controls and current limits</h2>
+        <p class="lead">This section distinguishes controls Hermes can enforce from planning estimates. It is easy to mistake a number displayed in a task card for a hard limit; it is not one today.</p>
+        <table><thead><tr><th>Control</th><th>What it does</th><th>Enforced by</th></tr></thead><tbody>
+          <tr><td>Task cost estimate</td><td>Records the planned USD amount.</td><td>Hermes LW metadata only</td></tr>
+          <tr><td>Per-profile budget field</td><td>Records how you intend to split the budget among selected profiles.</td><td>Hermes LW metadata only</td></tr>
+          <tr><td>Max runtime</td><td>Stops a running Hermes worker after the selected duration; one-attempt circuit breaker blocks retries.</td><td>Hermes Kanban runtime</td></tr>
+          <tr><td>OpenRouter limited inference key</td><td>Can cap cumulative spend for one API key, including BYOK if included. A non-resetting key limit is available.</td><td>OpenRouter, if every call uses that key</td></tr>
+          <tr><td>Per-task spend ceiling</td><td>Must reserve every request, track actual usage, route every model call, and reject when the task limit is reached.</td><td>Needs a provider-neutral metering gateway integrated with Hermes</td></tr>
+        </tbody></table>
+        <p>Read the <a href="cost-enforcement.html">full cost-enforcement research</a> for the installed Hermes feature check, OpenRouter key-limit option, LiteLLM proxy findings, and a proposed implementation sequence.</p>
+      </section>
+
+      <section id="troubleshooting">
+        <h2>Troubleshooting</h2>
+        <details><summary>The UI says Hermes is disconnected</summary><div class="inside"><p>Launch the app with <code>./launch.sh</code>; it starts the backend at <code>127.0.0.1:18731</code>. Check <code>/tmp/hermes-control-backend.log</code> for backend startup errors.</p></div></details>
+        <details><summary>No models appear</summary><div class="inside"><p>Open Models &amp; Providers and select the same provider you configured for the profile. Confirm its credentials are saved. Some Hermes providers return only model IDs; Hermes LW labels unavailable pricing instead of guessing.</p></div></details>
+        <details><summary>Hermes reports “task not found” or assignment is rejected</summary><div class="inside"><p>Refresh the board. If the task came from another Hermes client, edit Task Details and explicitly choose allowed profiles before assigning it. Hermes LW deliberately treats tasks without its policy metadata as eligible for nobody.</p></div></details>
+        <details><summary>A task timed out</summary><div class="inside"><p>The worker reached its configured maximum runtime. The new Hermes LW form sets one attempt, so the task should block rather than retry automatically. Review task logs and usage with your provider before deciding whether to start it again.</p></div></details>
+        <details><summary>Where are settings and API keys stored?</summary><div class="inside"><p>Hermes configuration and profile credentials remain under <code>~/.hermes</code>. Hermes LW settings and estimates are under <code>~/.local/share/hermes-control</code>; model cache is under <code>~/.cache/hermes-control</code>. Provider key values do not appear in dashboard responses.</p></div></details>
+      </section>
+    </main>
+  </div>
+  <footer>Hermes LW is an independent community project and is not affiliated with Nous Research. <a href="https://github.com/thediamondsaint/hermes-lw">Source code</a> · <a href="cost-enforcement.html">Cost enforcement research</a> · <a href="https://github.com/thediamondsaint/hermes-lw/issues">Report an issue</a></footer>
+</body>
+</html>
