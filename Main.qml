@@ -661,10 +661,10 @@ ShellRoot {
           width: parent.width; height: 40; color: root.bg
           Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: root.border }
           Row { anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 3
-            Repeater { model: ["New project", "New task", "Add profile", "Model catalog", "Refresh"]
-              delegate: Rectangle { required property string modelData; required property int index; width: [88, 78, 88, 96, 66][index]; height: 32; anchors.verticalCenter: parent.verticalCenter; color: toolbarHover.containsMouse ? root.hoverFill : root.raised; border.color: root.border
+            Repeater { model: ["New project", "New task", "Add profile", "Model catalog", "Refresh", "Options"]
+              delegate: Rectangle { required property string modelData; required property int index; width: [88, 78, 88, 96, 66, 72][index]; height: 32; anchors.verticalCenter: parent.verticalCenter; color: toolbarHover.containsMouse ? root.hoverFill : root.raised; border.color: root.border
                 Row { anchors.centerIn: parent; spacing: 5
-                  Text { text: ["▣", "+", "◉", "⌕", "↻"][index]; color: root.accent; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                  Text { text: ["▣", "+", "◉", "⌕", "↻", "⚙"][index]; color: root.accent; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
                   Text { text: modelData; color: root.text; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
                 }
                 MouseArea { id: toolbarHover; anchors.fill: parent; hoverEnabled: true; onClicked: {
@@ -672,12 +672,13 @@ ShellRoot {
                   else if (index === 1) root.prepareNewTask()
                   else if (index === 2) { root.showCreateProfile = true; newProfileSlug.text = ""; newProfileRole.text = ""; generatedSoul.text = ""; newProfileKey.text = "" }
                   else if (index === 3) { root.showModels = true; if (!root.modelCatalog.length) root.loadModelCatalog(false) }
-                  else root.refresh()
+                  else if (index === 4) root.refresh()
+                  else root.page = "Models & Providers"
                 } }
               }
             }
             Rectangle { width: 1; height: 25; color: root.border; anchors.verticalCenter: parent.verticalCenter; anchors.leftMargin: 6 }
-            Item { width: Math.max(1, parent.width - 8 - 88 - 78 - 88 - 96 - 66 - 25 - 152); height: 1 }
+            Item { width: Math.max(1, parent.width - 8 - 88 - 78 - 88 - 96 - 66 - 72 - 25 - 152); height: 1 }
             Rectangle { width: 34; height: 30; anchors.verticalCenter: parent.verticalCenter; color: root.raised; border.color: root.border
               Text { anchors.centerIn: parent; text: root.darkMode ? "☼" : "☾"; color: root.accent; font.pixelSize: 15 }
               MouseArea { anchors.fill: parent; onClicked: root.toggleTheme() }
@@ -1432,7 +1433,7 @@ ShellRoot {
         Rectangle { width: Math.min(1120, parent.width - 24); height: Math.min(790, parent.height - 24); radius: 2; color: root.surface; border.color: "#7f9db9"; anchors.centerIn: parent
           XpTitleBar { z: 2; anchors.top: parent.top; width: parent.width; caption: "OpenRouter Model Catalog"; darkMode: root.darkMode; onCloseRequested: root.showModels = false }
           MouseArea { anchors.fill: parent }
-          Column { anchors.fill: parent; anchors.margins: 22; anchors.topMargin: 50; spacing: 13
+          Column { anchors.fill: parent; anchors.margins: 22; anchors.topMargin: 50; spacing: 8
             Row { width: parent.width; height: 44
               Column { id: catalogHeading; spacing: 4
                 Text { text: "OpenRouter model catalog"; color: root.text; font.pixelSize: 18; font.bold: true }
@@ -1445,34 +1446,39 @@ ShellRoot {
               }
               Item { width: 24; height: 20 }
             }
-            Row { width: parent.width; height: 38; spacing: 9
-              TextField { leftPadding: 10; rightPadding: 10; id: modelSearch; width: 410; height: 36; color: root.text; font.pixelSize: 10; placeholderText: "Search name, creator, use, modality, capability…"; placeholderTextColor: root.muted; onTextChanged: root.catalogVisibleLimit = 100; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              ComboBox { id: catalogPublisherFilter; width: 190; height: 36; model: root.catalogPublishers; contentItem: Text { text: catalogPublisherFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              ComboBox { id: modelUseFilter; width: 155; height: 36; model: ["All uses", "Favorites", "Text & chat", "Coding", "Vision", "Image generation", "Audio", "Video", "Embeddings", "Reranking", "Decision", "Files & documents", "Other"]; contentItem: Text { text: modelUseFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              Rectangle { width: 80; height: 32; radius: 2; color: root.raised; border.color: root.border; anchors.verticalCenter: parent.verticalCenter
-                Text { anchors.centerIn: parent; text: "Collapse all"; color: root.accent; font.pixelSize: 8; font.bold: true }
-                MouseArea { anchors.fill: parent; onClicked: root.collapseAllCatalogGroups() }
-              }
-              Rectangle { width: 80; height: 32; radius: 2; color: root.raised; border.color: root.border; anchors.verticalCenter: parent.verticalCenter
-                Text { anchors.centerIn: parent; text: "Expand all"; color: root.accent; font.pixelSize: 8; font.bold: true }
-                MouseArea { anchors.fill: parent; onClicked: root.expandAllCatalogGroups() }
-              }
-              Item { width: Math.max(0, parent.width - 410 - 190 - 155 - 80 - 80 - 54 - catalogCount.implicitWidth); height: 1 }
-              Text { id: catalogCount; text: root.catalogItems.length + " / " + root.modelCatalog.length + " shown"; color: root.muted; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
+            Row { width: parent.width; height: 38; spacing: 8
+              TextField { leftPadding: 10; rightPadding: 10; id: modelSearch; width: 310; height: 36; color: root.text; font.pixelSize: 10; placeholderText: "Search model, creator, capability…"; placeholderTextColor: root.muted; onTextChanged: root.catalogVisibleLimit = 100; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: catalogPublisherFilter; width: 150; height: 36; model: root.catalogPublishers; contentItem: Text { text: catalogPublisherFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: modelUseFilter; width: 145; height: 36; model: ["All uses", "Favorites", "Text & chat", "Coding", "Vision", "Image generation", "Audio", "Video", "Embeddings", "Reranking", "Decision", "Files & documents", "Other"]; contentItem: Text { text: modelUseFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             }
             Row { width: parent.width; height: 36; spacing: 8
               ComboBox { id: catalogGroupBy; width: 150; height: 34; model: ["Group: use", "Group: creator", "Group: input cost", "Group: output cost", "Group: context", "Group: modality"]; contentItem: Text { text: catalogGroupBy.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              ComboBox { id: catalogSort; width: 210; height: 34; model: ["OpenRouter order", "Name · A to Z", "Newest first", "Input · low to high", "Output · low to high", "Average cost · low to high", "Context · high to low", "Input · high to low", "Output · high to low"]; contentItem: Text { text: catalogSort.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              ComboBox { id: catalogModalityFilter; width: 150; height: 34; model: ["Any modality", "Text input", "Image input", "Audio input", "Video input", "Image output", "Audio output", "Embeddings"]; contentItem: Text { text: catalogModalityFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: catalogSort; width: 205; height: 34; model: ["OpenRouter order", "Name · A to Z", "Newest first", "Input · low to high", "Output · low to high", "Average cost · low to high", "Context · high to low", "Input · high to low", "Output · high to low"]; contentItem: Text { text: catalogSort.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: catalogModalityFilter; width: 145; height: 34; model: ["Any modality", "Text input", "Image input", "Audio input", "Video input", "Image output", "Audio output", "Embeddings"]; contentItem: Text { text: catalogModalityFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            }
+            Row { width: parent.width; height: 36; spacing: 8
               ComboBox { id: catalogPriceFilter; width: 135; height: 34; model: ["Any input price", "Free", "Under $1 / M", "$1–5 / M", "$5–20 / M", "$20+ / M"]; contentItem: Text { text: catalogPriceFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              ComboBox { id: catalogContextFilter; width: 125; height: 34; model: ["Any context", "64K+", "128K+", "256K+", "1M+"]; contentItem: Text { text: catalogContextFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              ComboBox { id: catalogCapabilityFilter; width: 140; height: 34; model: ["Any capability", "Tool calling", "Reasoning", "Structured output"]; contentItem: Text { text: catalogCapabilityFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              TextField { id: samplePromptInput; width: 92; height: 34; text: String(root.samplePromptTokens); placeholderText: "Input tokens"; color: root.text; font.pixelSize: 9; inputMethodHints: Qt.ImhDigitsOnly; onTextChanged: root.samplePromptTokens = Math.max(0, Math.min(10000000, parseInt(text) || 0)); background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
-              TextField { id: sampleCompletionInput; width: 92; height: 34; text: String(root.sampleCompletionTokens); placeholderText: "Output tokens"; color: root.text; font.pixelSize: 9; inputMethodHints: Qt.ImhDigitsOnly; onTextChanged: root.sampleCompletionTokens = Math.max(0, Math.min(10000000, parseInt(text) || 0)); background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: catalogContextFilter; width: 115; height: 34; model: ["Any context", "64K+", "128K+", "256K+", "1M+"]; contentItem: Text { text: catalogContextFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              ComboBox { id: catalogCapabilityFilter; width: 130; height: 34; model: ["Any capability", "Tool calling", "Reasoning", "Structured output"]; contentItem: Text { text: catalogCapabilityFilter.displayText; color: root.text; font.pixelSize: 9; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 9; rightPadding: 18 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              Text { text: "IN"; color: root.muted; font.pixelSize: 8; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+              TextField { id: samplePromptInput; width: 72; height: 34; text: String(root.samplePromptTokens); color: root.text; font.pixelSize: 9; inputMethodHints: Qt.ImhDigitsOnly; ToolTip.visible: hovered; ToolTip.text: "Sample input tokens"; onTextChanged: root.samplePromptTokens = Math.max(0, Math.min(10000000, parseInt(text) || 0)); background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              Text { text: "OUT"; color: root.muted; font.pixelSize: 8; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+              TextField { id: sampleCompletionInput; width: 72; height: 34; text: String(root.sampleCompletionTokens); color: root.text; font.pixelSize: 9; inputMethodHints: Qt.ImhDigitsOnly; ToolTip.visible: hovered; ToolTip.text: "Sample output tokens"; onTextChanged: root.sampleCompletionTokens = Math.max(0, Math.min(10000000, parseInt(text) || 0)); background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
               Rectangle { width: 80; height: 34; radius: 2; color: root.raised; border.color: root.border
                 Text { anchors.centerIn: parent; text: "Reset filters"; color: root.accent; font.pixelSize: 8; font.bold: true }
                 MouseArea { anchors.fill: parent; onClicked: root.resetCatalogFilters() }
               }
+            }
+            Row { width: parent.width; height: 32; spacing: 8
+              Rectangle { width: 105; height: 30; radius: 2; color: root.raised; border.color: root.border
+                Text { anchors.centerIn: parent; text: "Collapse all groups"; color: root.accent; font.pixelSize: 8; font.bold: true }
+                MouseArea { anchors.fill: parent; onClicked: root.collapseAllCatalogGroups() }
+              }
+              Rectangle { width: 105; height: 30; radius: 2; color: root.raised; border.color: root.border
+                Text { anchors.centerIn: parent; text: "Expand all groups"; color: root.accent; font.pixelSize: 8; font.bold: true }
+                MouseArea { anchors.fill: parent; onClicked: root.expandAllCatalogGroups() }
+              }
+              Text { id: catalogCount; text: root.catalogItems.length + " matching · " + Math.min(root.catalogItems.length, root.catalogVisibleLimit) + " loaded · " + root.modelCatalog.length + " total"; color: root.muted; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
             }
             Row { width: parent.width; height: 28; spacing: 8
               Text { text: "MODEL"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 1; width: parent.width * 0.55; leftPadding: 12; anchors.verticalCenter: parent.verticalCenter }
@@ -1482,7 +1488,7 @@ ShellRoot {
               Item { width: 28; height: 1 }
               Item { width: 75; height: 1 }
             }
-            ListView { id: catalogList; width: parent.width; height: parent.height - 294; clip: true; spacing: 6; model: root.catalogDisplayItems; section.property: "catalog_section"; section.criteria: ViewSection.FullString
+            ListView { id: catalogList; width: parent.width; height: parent.height - 340; clip: true; spacing: 6; model: root.catalogDisplayItems; section.property: "catalog_section"; section.criteria: ViewSection.FullString
               section.delegate: Rectangle { width: catalogList.width; height: 25; radius: 2; color: root.raised
                 Text { anchors.left: parent.left; anchors.leftMargin: 12; anchors.verticalCenter: parent.verticalCenter; text: (root.catalogGroupIsCollapsed(section) ? "▸  " : "▾  ") + section + "   ·   " + root.catalogItems.filter(function(item) { return item.catalog_section === section }).length; color: root.accent; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.4 }
                 MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleCatalogGroup(section) }

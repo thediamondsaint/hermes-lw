@@ -33,3 +33,7 @@ Second-pass audit of the local Quickshell client and its Python bridge. The GitH
 ## Follow-up opportunities
 
 This pass addresses the 25 listed issues. Further work could add drag-and-drop status transitions, a model comparison tray, profile import/export archives, and board event streaming. Those need separate design choices because Hermes CLI remains the source of truth for current task and profile state.
+
+## Live-window correction
+
+The first desktop review exposed a layout issue that static inspection missed: fixed-width catalog filter rows overflowed the 1200×760 Quickshell window, pushing controls offscreen. The catalog now uses compact separate rows, and the top toolbar has an always-visible **Options** button for backend settings. The updated catalog screenshot is cropped to the catalog itself so it contains no local profile or board data.
