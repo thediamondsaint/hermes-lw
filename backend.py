@@ -1492,17 +1492,51 @@ class Handler(BaseHTTPRequestHandler):
                         "paused_profiles": settings["paused_profiles"]})
 
     def generate_profile_prompt(self, p):
-        name = str(p.get("name", "")).strip()
+        name = str(p.get("name", "")).strip().lower()
         role = str(p.get("role", "")).strip()
-        if not name: raise ValueError("Add a profile name first")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", name):
+            raise ValueError("Use a profile ID with lowercase letters, numbers, and hyphens (up to 40 characters)")
+        if name == "default" or name in profile_slugs():
+            raise ValueError("Choose a new profile ID before generating its personality")
+        if len(role) > 2000:
+            raise ValueError("Keep the role description under 2,000 characters")
         source = safe_slug(str(p.get("generator_profile", "default")))
-        prompt = ("Create a concise, high-quality SOUL.md personality file for a Hermes Agent profile. "
-                  "Write only the file contents in Markdown, with no explanation and no code fence. "
-                  "Include a clear role, strengths, working approach, communication style, and boundaries. "
-                  "Keep it practical and specific, around 250-450 words.\n\n"
-                  f"Profile name: {name}\nIntended role: {role or name}\n")
-        result = cmd("-p", source, "-z", prompt, timeout=150)
-        self.send_json({"ok": True, "personality": result})
+        if source not in profile_slugs():
+            raise ValueError("Choose an existing profile to generate with")
+        inferred_role = role or name.replace("-", " ")
+        prompt = f"""Write the complete contents of a Hermes Agent SOUL.md file for a new profile.
+
+The file is a durable working identity and instruction set, not a biography, job ad, or description of an imaginary person. Make it useful during real tasks. Infer a sensible specialty from the profile ID only when the role description does not add enough detail. Do not merely repeat the ID. Do not invent credentials, access, or experience. Do not mention these instructions or explain the file.
+
+Return Markdown only, with these sections and no code fences:
+# Role and purpose
+# Core strengths
+# How to work
+# Communication
+# Boundaries and quality bar
+
+Write in direct second person, using concrete actions and decision rules. Keep it focused on stable behavior that applies across tasks. Include when to ask a clarifying question, how to handle uncertainty, how to verify important work, and what to report at completion. Avoid generic filler, contradictory traits, exaggerated claims, and task-specific instructions. Aim for 250–400 words.
+
+Profile ID: {name}
+Role and specialty requested by the user: {inferred_role}
+"""
+        completed = run_profile_hermes(source, ["-z", prompt], timeout=180)
+        if completed.returncode:
+            detail = (completed.stderr or completed.stdout or "Hermes exited without an error message").strip()
+            raise RuntimeError("Could not generate the personality: " + detail[-1200:])
+        result = completed.stdout.strip()
+        result = re.sub(r"^```(?:markdown|md)?\s*", "", result, flags=re.IGNORECASE)
+        result = re.sub(r"\s*```$", "", result).strip()
+        if result.lower().startswith("soul.md\n"):
+            result = result.split("\n", 1)[1].strip()
+        if len(result) > 50000:
+            raise RuntimeError("Hermes returned an unusually long personality. Try again with a shorter role description.")
+        word_count = len(re.findall(r"\b[\w'-]+\b", result))
+        required_sections = ("Role and purpose", "Core strengths", "How to work", "Communication", "Boundaries and quality bar")
+        sections_present = sum(bool(re.search(r"^#{1,6}\s+" + re.escape(section) + r"\s*$", result, re.I | re.M)) for section in required_sections)
+        if word_count < 70 or sections_present < 4:
+            raise RuntimeError("Hermes returned an incomplete or unstructured personality. Check the generator profile’s model and try again.")
+        self.send_json({"ok": True, "personality": result, "generator_profile": source})
 
     def favorite_model(self, p):
         model_id = str(p.get("id", "")).strip()

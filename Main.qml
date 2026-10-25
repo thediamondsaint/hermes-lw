@@ -47,6 +47,7 @@ ShellRoot {
   property bool showCreateProfile: false
   property bool showDeleteProfile: false
   property bool generatingPersonality: false
+  property string personalityGeneratorProfile: "default"
   property bool showPromptEditor: false
   property var editingPrompt: null
   property bool showModels: false
@@ -383,6 +384,7 @@ ShellRoot {
     root.saveActiveTabState()
     root.activeConnectionId = id
     root.connectionEpoch += 1
+    root.generatingPersonality = false
     root.backendConnected = false
     root.profiles = []; root.projects = []; root.tasks = []; root.projectInfo = ({})
     root.selectedTask = null; root.selectedTaskDetail = ({}); root.savedViews = []; root.taskTemplates = []
@@ -487,7 +489,12 @@ ShellRoot {
       root.notice = managerOnly ? "Local connection manager is unreachable" : "Hermes LW backend is unreachable"
       if (onFailure) onFailure({error: root.notice})
     }
-    xhr.ontimeout = function() { finish(); if (!managerOnly && (requestedConnection !== root.activeConnectionId || requestedEpoch !== root.connectionEpoch)) return; root.notice = "Hermes request timed out"; if (onFailure) onFailure({error: root.notice}) }
+    xhr.ontimeout = function() {
+      finish()
+      if (!managerOnly && (requestedConnection !== root.activeConnectionId || requestedEpoch !== root.connectionEpoch)) return
+      root.notice = "Hermes request timed out"
+      if (onFailure) onFailure({error: root.notice})
+    }
     xhr.send(payload ? JSON.stringify(payload) : "{}")
   }
   function refresh(boardSlug) {
@@ -938,6 +945,7 @@ ShellRoot {
       workspace: newWorkspace.currentText}, function(d) { root.taskTemplates = d.templates || []; root.notice = "Task template saved" })
   }
   function createProfile() {
+    if (root.generatingPersonality) { root.notice = "Wait for personality generation to finish"; return }
     var payload = {slug: newProfileSlug.text, description: newProfileRole.text, clone_mode: cloneMode.currentIndex === 0 ? "empty" : cloneMode.currentIndex === 1 ? "clone" : "clone_all",
       source: cloneSource.currentText, copy_api_key: copyApiKey.checked, openrouter_api_key: newProfileKey.text, personality: generatedSoul.text}
     request("POST", "/api/profile/create", payload, function(d) {
@@ -948,14 +956,24 @@ ShellRoot {
       root.refresh()
     })
   }
+  function openCreateProfileDialog() {
+    root.showCreateProfile = true
+    newProfileSlug.text = ""; newProfileRole.text = ""; generatedSoul.text = ""; newProfileKey.text = ""
+    cloneMode.currentIndex = 0; cloneSource.currentIndex = 0; copyApiKey.checked = false
+    root.personalityGeneratorProfile = root.profiles.some(function(p) { return p.slug === root.selectedProfile }) ? root.selectedProfile : "default"
+  }
   function generatePersonality() {
     if (!newProfileSlug.text.trim()) { root.notice = "Enter a profile name before generating its prompt"; return }
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,39}$/.test(newProfileSlug.text.trim())) { root.notice = "Use a profile ID with letters, numbers, and hyphens"; return }
     root.generatingPersonality = true
-    root.request("POST", "/api/profile/generate", {name: newProfileSlug.text, role: newProfileRole.text, generator_profile: "default"}, function(d) {
+    root.request("POST", "/api/profile/generate", {name: newProfileSlug.text, role: newProfileRole.text, generator_profile: root.personalityGeneratorProfile}, function(d) {
       root.generatingPersonality = false
       generatedSoul.text = d.personality || ""
-      root.notice = "Personality prompt generated · review before creating"
-    })
+      root.notice = "Personality generated with " + (d.generator_profile || root.personalityGeneratorProfile) + " · review it before creating"
+    }, function(error) {
+      root.generatingPersonality = false
+      root.notice = error.error || "Could not generate the personality"
+    }, 190000)
   }
   function profileControl(action) {
     request("POST", "/api/profile/manage", {slug: root.selectedProfile, action: action}, function(d) {
@@ -1031,7 +1049,7 @@ ShellRoot {
   }
 
   Shortcut { sequence: "Ctrl+N"; onActivated: root.prepareNewTask() }
-  Shortcut { sequence: "Ctrl+Shift+N"; onActivated: { root.showCreateProfile = true; newProfileSlug.text = ""; newProfileRole.text = ""; generatedSoul.text = ""; newProfileKey.text = "" } }
+  Shortcut { sequence: "Ctrl+Shift+N"; onActivated: root.openCreateProfileDialog() }
   Shortcut { sequence: "Ctrl+R"; onActivated: root.refresh() }
   Shortcut { sequence: "Ctrl+F"; onActivated: { if (root.showModels) { modelSearch.forceActiveFocus(); modelSearch.selectAll() } else { root.page = "Kanban"; taskSearchInput.forceActiveFocus(); taskSearchInput.selectAll() } } }
   Shortcut { sequence: "Ctrl+1"; onActivated: root.page = "Overview" }
@@ -1095,7 +1113,7 @@ ShellRoot {
                 MouseArea { id: toolbarHover; anchors.fill: parent; hoverEnabled: true; onClicked: {
                   if (index === 0) root.editProject(null)
                   else if (index === 1) root.prepareNewTask()
-                  else if (index === 2) { root.showCreateProfile = true; newProfileSlug.text = ""; newProfileRole.text = ""; generatedSoul.text = ""; newProfileKey.text = "" }
+                  else if (index === 2) root.openCreateProfileDialog()
                   else if (index === 3) root.openModelCatalog()
                   else if (index === 4) root.refresh()
                   else root.page = "Options"
@@ -1344,7 +1362,7 @@ ShellRoot {
                     Text { text: root.profiles.length; color: root.accent; font.pixelSize: 10 }
                     Rectangle { width: 22; height: 22; radius: 2; color: root.selectedFill
                       Text { anchors.centerIn: parent; text: "+"; color: root.accent; font.pixelSize: 16 }
-                      MouseArea { anchors.fill: parent; onClicked: { root.showCreateProfile = true; newProfileSlug.text = ""; newProfileRole.text = ""; generatedSoul.text = ""; newProfileKey.text = "" } }
+                      MouseArea { anchors.fill: parent; onClicked: root.openCreateProfileDialog() }
                     }
                   }
                   TextField { leftPadding: 9; rightPadding: 9; id: profileSearchInput; width: parent.width; height: 30; placeholderText: "Find a profile…"; placeholderTextColor: root.muted; color: root.text; font.pixelSize: 9; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
@@ -2080,9 +2098,9 @@ ShellRoot {
               Item { width: 24; height: 20 }
             }
             Text { text: "PROFILE ID"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.8 }
-            TextField { leftPadding: 9; rightPadding: 9; id: newProfileSlug; width: parent.width; height: 36; color: root.text; font.pixelSize: 10; placeholderText: "e.g. ux-reviewer"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            TextField { leftPadding: 9; rightPadding: 9; id: newProfileSlug; width: parent.width; height: 36; enabled: !root.generatingPersonality; color: root.text; font.pixelSize: 10; placeholderText: "e.g. ux-reviewer"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Text { text: "ROLE / DESCRIPTION"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.8 }
-            TextField { leftPadding: 9; rightPadding: 9; id: newProfileRole; width: parent.width; height: 36; color: root.text; font.pixelSize: 10; placeholderText: "What should this profile be good at?"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            TextField { leftPadding: 9; rightPadding: 9; id: newProfileRole; width: parent.width; height: 36; enabled: !root.generatingPersonality; color: root.text; font.pixelSize: 10; placeholderText: "Optional: specify its specialty or target work"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Text { text: "CLONE STRATEGY"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.8 }
             ComboBox { id: cloneMode; width: parent.width; height: 36; model: ["Start empty", "Clone config, personality & skills", "Full clone including workspace state"]; contentItem: Text { text: cloneMode.displayText; color: root.text; font.pixelSize: 10; verticalAlignment: Text.AlignVCenter; leftPadding: 10 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Row { width: parent.width; height: 34; spacing: 10
@@ -2094,17 +2112,19 @@ ShellRoot {
             TextField { leftPadding: 9; rightPadding: 9; id: newProfileKey; width: parent.width; height: 36; echoMode: TextInput.Password; color: root.text; font.pixelSize: 10; placeholderText: "Stored privately in this profile’s .env"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Row { width: parent.width; height: 32; spacing: 8
               Text { id: generatedSoulLabel; text: "GENERATED SOUL.md"; color: root.muted; font.pixelSize: 8; font.bold: true; font.letterSpacing: 0.8; anchors.verticalCenter: parent.verticalCenter }
-              Item { width: Math.max(0, parent.width - generatedSoulLabel.implicitWidth - 145 - 16); height: 1 }
+              ComboBox { id: personalityGeneratorPicker; width: 156; height: 30; model: root.profiles.map(function(p) { return p.slug + " · " + p.model }); currentIndex: Math.max(0, root.profiles.map(function(p) { return p.slug }).indexOf(root.personalityGeneratorProfile)); onActivated: if (root.profiles[currentIndex]) root.personalityGeneratorProfile = root.profiles[currentIndex].slug; contentItem: Text { text: personalityGeneratorPicker.displayText || "default"; color: root.text; font.pixelSize: 8; elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter; leftPadding: 7; rightPadding: 15 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              Item { width: Math.max(0, parent.width - generatedSoulLabel.implicitWidth - 156 - 145 - 24); height: 1 }
               Rectangle { width: 145; height: 30; radius: 2; color: root.selectedFill; border.color: root.border
                 Text { anchors.centerIn: parent; text: root.generatingPersonality ? "Generating…" : "✦ Generate from name"; color: root.blue; font.pixelSize: 8; font.bold: true }
-                MouseArea { anchors.fill: parent; enabled: !root.generatingPersonality; onClicked: root.generatePersonality() }
+                MouseArea { id: generateSoulHover; anchors.fill: parent; enabled: !root.generatingPersonality; hoverEnabled: true; onClicked: root.generatePersonality() }
+                ToolTip.visible: generateSoulHover.containsMouse; ToolTip.text: "Uses one request with the selected profile’s model and provider. Normal provider charges apply."
               }
             }
-            TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: generatedSoul; width: parent.width; height: 180; color: root.text; font.pixelSize: 9; wrapMode: TextEdit.Wrap; selectByMouse: true; placeholderText: "Generate a profile personality from its ID and role, or write one here…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            TextArea { leftPadding: 10; rightPadding: 10; topPadding: 8; bottomPadding: 8; id: generatedSoul; width: parent.width; height: 180; enabled: !root.generatingPersonality; color: root.text; font.pixelSize: 9; wrapMode: TextEdit.Wrap; selectByMouse: true; placeholderText: "Generate a profile personality from its ID and role, or write one here…"; placeholderTextColor: root.muted; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
             Row { width: parent.width; height: 36; spacing: 9
-              Rectangle { width: 120; height: 36; radius: 2; color: root.accent
-                Text { anchors.centerIn: parent; text: "Create profile"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
-                MouseArea { anchors.fill: parent; onClicked: root.createProfile() }
+              Rectangle { width: 120; height: 36; radius: 2; color: root.generatingPersonality ? root.border : root.accent
+                Text { anchors.centerIn: parent; text: root.generatingPersonality ? "Please wait…" : "Create profile"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                MouseArea { anchors.fill: parent; enabled: !root.generatingPersonality; onClicked: root.createProfile() }
               }
               Rectangle { width: 88; height: 36; radius: 2; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Cancel"; color: root.muted; font.pixelSize: 9 } MouseArea { anchors.fill: parent; onClicked: root.showCreateProfile = false } }
               Text { text: "Copied OpenRouter keys are removed unless you opt in; a new key overrides the copied key."; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 225; wrapMode: Text.WordWrap }
