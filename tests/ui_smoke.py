@@ -49,6 +49,13 @@ class Fixture(BaseHTTPRequestHandler):
         payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         if self.path == "/api/profile/create":
             self.reply({"error": "Use a profile ID"}, 400)
+        elif self.path == "/api/profile/generate":
+            assert payload["model"] == "fixture/one"
+            assert payload["provider"] == "openrouter"
+            if payload["name"] == "error-case":
+                self.reply({"error": "Provider rejected the selected model"}, 400)
+            else:
+                self.reply({"personality": "# Role and purpose\nReview code and verify findings carefully.", "provider": "openrouter", "model": "fixture/one"})
         elif self.path == "/api/models/recommend":
             assert payload["model"] == "fixture/one"
             self.reply({"recommendations": [{"id": "fixture/one", "reason": "Synthetic recommendation", "tradeoff": "Synthetic limitation"}], "summary": "Fixture response", "candidate_count": 1, "provider": "openrouter", "model": "fixture/one"})
@@ -124,6 +131,65 @@ QML_TESTS = '''
           compare(notificationToast.z, 100)
           compare(root.creatingProfile, false)
         }
+        function scrollProfileTo(item) {
+          createProfileScroll.contentY = Math.max(0, Math.min(createProfileScroll.contentHeight - createProfileScroll.height,
+            item.mapToItem(createProfileForm, 0, 0).y - 70))
+          wait(100)
+        }
+        function test_profile_catalog_returns_to_create_dialog() {
+          root.openCreateProfileDialog()
+          tryCompare(root, "modelCatalogLoading", false, 5000)
+          var previous = modelInput.text
+          scrollProfileTo(newProfileBrowseModels)
+          mouseClick(newProfileBrowseModels)
+          compare(root.showModels, true)
+          compare(root.catalogSelectionTarget, "newProfile")
+          var position = newProfileBrowseModels.mapToItem(win.contentItem, 0, 0)
+          verify(position.x >= 0 && position.x + newProfileBrowseModels.width <= win.width)
+          tryCompare(root, "modelCatalogLoading", false, 5000)
+          tryVerify(function(){return catalogList.itemAtIndex(0) !== null}, 5000)
+          tryVerify(function(){return findChild(catalogList.itemAtIndex(0), "catalogUseModel_fixture/one") !== null}, 5000)
+          var choose = findChild(catalogList.itemAtIndex(0), "catalogUseModel_fixture/one")
+          // Background workspaces can defer Qt's positioner polish.
+          for (var child of choose.parent.children) { if (child.forceLayout) child.forceLayout() }
+          choose.parent.forceLayout()
+          catalogViewport.contentX = Math.max(0, Math.min(catalogViewport.contentWidth - catalogViewport.width,
+            choose.mapToItem(catalogViewport.contentItem, 0, 0).x - 100))
+          catalogViewport.contentY = Math.max(0, Math.min(catalogViewport.contentHeight - catalogViewport.height,
+            choose.mapToItem(catalogViewport.contentItem, 0, 0).y - 100))
+          wait(100)
+          mouseClick(choose)
+          compare(root.showModels, false)
+          compare(root.showCreateProfile, true)
+          compare(root.newProfileModel, "fixture/one")
+          compare(root.personalityGenerationModel, "fixture/one")
+          compare(modelInput.text, previous)
+          compare(cloneMode.currentIndex, 1)
+          compare(cloneSource.currentText, "default")
+        }
+        function test_generate_click_fills_personality() {
+          root.openCreateProfileDialog()
+          tryCompare(root, "modelCatalogLoading", false, 5000)
+          newProfileSlug.text = "code-reviewer"
+          newProfileRole.text = "Audit repositories"
+          scrollProfileTo(generateSoulButton)
+          verify(generateSoulButton.enabled)
+          mouseClick(generateSoulButton)
+          tryVerify(function(){return generatedSoul.text.indexOf("# Role and purpose") === 0}, 5000)
+          compare(root.generatingPersonality, false)
+          verify(root.personalityGenerationStatus.indexOf("Generated with") === 0)
+        }
+        function test_generate_failure_is_visible_and_retryable() {
+          root.openCreateProfileDialog()
+          tryCompare(root, "modelCatalogLoading", false, 5000)
+          newProfileSlug.text = "error-case"
+          scrollProfileTo(generateSoulButton)
+          mouseClick(generateSoulButton)
+          tryVerify(function(){return root.personalityGenerationStatus.indexOf("Provider rejected") >= 0}, 5000)
+          compare(root.generatingPersonality, false)
+          verify(generateSoulButton.enabled)
+          compare(generatedSoul.text, "")
+        }
         function test_advisor_request_click() {
           root.openModelCatalog("openrouter", "default", "")
           tryCompare(root, "modelCatalogLoading", false, 5000)
@@ -186,7 +252,7 @@ def main():
                 raise SystemExit("The audit fixture did not open as a normal tiled window")
             print("TILED_UI: floating=false workspace=4")
             marker = __import__("re").search(r"UI_AUDIT_RESULTS (\d+) (\d+)", output)
-            if not marker or int(marker[2]) or int(marker[1]) < 8:
+            if not marker or int(marker[2]) or int(marker[1]) < 11:
                 raise SystemExit("UI control tests did not pass: " + (marker[0] if marker else "no completion marker"))
     finally:
         subprocess.run(["hyprctl", "eval", f"if _G[{lua_key}] then _G[{lua_key}]:set_enabled(false); _G[{lua_key}] = nil end"], capture_output=True)

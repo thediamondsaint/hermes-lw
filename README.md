@@ -40,6 +40,14 @@ The local control API binds only to `127.0.0.1:18731` and rejects nonlocal hosts
 
 The latest 25-item audit, GitHub references, and implemented fixes are documented in [AUDIT.md](AUDIT.md).
 
+## Create or clone a profile
+
+Click **Add profile**, enter its name and role, then use **Browse models…** to choose its provider/model from the full catalog. Search, grouping, favorites, cost filters and the model advisor are available in the picker. **Use model** returns the selection to the new profile without changing an existing profile.
+
+Write the personality or click **Generate personality**. The selected profile model is also used for generation unless **Use a different AI model** is checked. The form shows the exact generation route and credential source before you click. Provider usage and retries determine the charge. Review the draft before creating; errors remain visible and preserve an earlier draft.
+
+**Copy settings & API keys** contains the advanced clone choices. The default copies config, personality and skills from `default`; API keys require explicit opt-in. When no key is copied or entered, configure the new profile’s key in Providers after creation.
+
 ## Screenshots
 
 The workspace screenshots use fictional demo profiles, prompts, and tasks. The Plugins & Tools screenshot is cropped to the capability panel and contains no profile list or credentials.
@@ -76,3 +84,5 @@ python tests/ui_smoke.py
 ```
 
 The last command opens a disposable fixture window on workspace 4 and clicks its controls using QtTest. It needs Quickshell and the QtTest QML module. The automated backend, startup, and Qt HTTP tests also run in GitHub Actions.
+
+With Hermes installed, `python tests/cli_generation_smoke.py` also exercises personality generation through the real CLI against a temporary local streaming provider. It uses fake credentials and leaves real profiles unchanged.

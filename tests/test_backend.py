@@ -137,6 +137,36 @@ class BackendTests(unittest.TestCase):
                 backend.run_isolated_generation("default", ["chat"], "auto", "model")
             run.assert_not_called()
 
+    def test_personality_keeps_useful_draft_without_exact_headings(self):
+        draft = "# Role and purpose\n" + ("Review code carefully and verify each finding with concrete evidence. " * 12)
+        response = "Warning: Unknown toolsets: internal\n" + draft
+        with patch.object(backend, "run_isolated_generation", return_value=subprocess.CompletedProcess([], 0, response, "session_id: test")) as run:
+            self.handler.generate_profile_prompt({"name": "reviewer", "generator_profile": "default", "provider": "openrouter", "model": "example/selected"})
+        self.assertEqual(self.responses[-1][1]["personality"], draft.strip())
+        self.assertIn("--cli", run.call_args.args[1])
+
+    def test_personality_reports_provider_error_instead_of_session_metadata(self):
+        response = subprocess.CompletedProcess([], 1, "Provider rejected the model: model not found", "\nsession_id: example\n")
+        with patch.object(backend, "run_isolated_generation", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "Provider rejected the model") as error:
+                self.handler.generate_profile_prompt({"name": "reviewer", "generator_profile": "default", "provider": "openrouter", "model": "example/selected"})
+        self.assertNotIn("session_id", str(error.exception))
+
+    def test_create_persists_selected_model_and_provider(self):
+        def create(*args, **kwargs):
+            self.make_profile("reviewer")
+        with patch.object(backend, "cmd", side_effect=create):
+            self.handler.create_profile({"slug": "reviewer", "clone_mode": "clone", "source": "default", "provider": "openrouter", "model": "example/chosen"})
+        config = yaml.safe_load((self.profiles / "reviewer" / "config.yaml").read_text())
+        self.assertEqual(config["model"], {"provider": "openrouter", "default": "example/chosen"})
+        self.assertEqual(self.responses[-1][1]["profile"], "reviewer")
+
+    def test_invalid_profile_model_rejected_before_clone(self):
+        with patch.object(backend, "cmd") as run:
+            with self.assertRaisesRegex(ValueError, "valid model"):
+                self.handler.create_profile({"slug": "reviewer", "provider": "openrouter", "model": "--bad"})
+            run.assert_not_called()
+
     def test_cannot_remove_assigned_profile_from_allowlist(self):
         self.make_profile("worker")
         with patch.object(backend, "cmd", return_value=json.dumps({"task": {"assignee": "worker"}})):

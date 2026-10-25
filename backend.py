@@ -1547,6 +1547,19 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Use lowercase letters, numbers, and hyphens for the profile ID")
         if slug == "default" or slug in profile_slugs():
             raise ValueError("That profile already exists or is reserved")
+        provider = str(p.get("provider", "")).strip().lower()
+        model_id = str(p.get("model", "")).strip()
+        base_url = str(p.get("base_url", "")).strip()
+        if provider:
+            if provider not in {entry["id"] for entry in installed_model_providers()} or provider == "auto":
+                raise ValueError("Choose a specific provider for the new profile")
+            if not model_id or len(model_id) > 200 or model_id.startswith("-") or any(c.isspace() or ord(c) < 32 for c in model_id):
+                raise ValueError("Choose a valid model for the new profile")
+            if base_url:
+                url = urllib.parse.urlsplit(base_url)
+                if (len(base_url) > 2048 or any(c.isspace() for c in base_url) or url.scheme not in ("http", "https")
+                        or not url.hostname or url.username or url.password or url.query or url.fragment):
+                    raise ValueError("Provider URL must be an HTTP(S) endpoint without credentials or query parameters")
         mode = str(p.get("clone_mode", "empty"))
         description = str(p.get("description", "")).strip()
         soul = str(p.get("personality", ""))
@@ -1569,6 +1582,19 @@ class Handler(BaseHTTPRequestHandler):
             cmd(*args, timeout=90)
         else:
             raise ValueError("Choose an empty profile, a settings clone, or a full clone")
+        if provider:
+            config_path, _ = profile_paths(slug)
+            cfg = yaml.safe_load(config_path.read_text()) or {}
+            selected = cfg.setdefault("model", {})
+            previous_provider = selected.get("provider")
+            selected.update({"provider": provider, "default": model_id})
+            if previous_provider != provider:
+                selected.pop("api_key", None)
+            if provider == "custom" and base_url:
+                selected["base_url"] = base_url
+            else:
+                selected.pop("base_url", None)
+            write_profile_config(config_path, cfg)
         if soul:
             atomic_write(profile_paths(slug)[1], soul)
         if api_key:
@@ -1651,15 +1677,24 @@ Role and specialty requested by the user: {inferred_role}
         # Root-level `-z` seeds an interactive chat. Use chat's one-shot query
         # mode so this request returns the generated file on stdout without a TTY.
         try:
-            completed = run_isolated_generation(source, ["chat", "-q", prompt, "-Q", "--source", "tool",
+            completed = run_isolated_generation(source, ["chat", "--cli", "-q", prompt, "-Q", "--source", "tool",
                                                      "--provider", provider, "--model", model,
                                                      "--toolsets", "__hermes_lw_no_tools__", "--ignore-rules"], provider, model)
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("The selected profile’s Hermes model did not respond within 180 seconds. Check its provider, model, and network settings, then try again.") from exc
         if completed.returncode:
-            detail = (completed.stderr or completed.stdout or "Hermes exited without an error message").strip()
-            raise RuntimeError("Could not generate the personality: " + detail[-1200:])
-        result = completed.stdout.strip()
+            # Quiet Hermes puts session metadata on stderr, even when its real
+            # provider error is on stdout. Do not hide that error behind a session ID.
+            detail = "\n".join(line for line in (completed.stderr + "\n" + completed.stdout).splitlines()
+                               if not re.match(r"^\s*session_id:", line))
+            detail = re.sub(r"\x1b\[[0-9;]*m", "", detail).strip()
+            raise RuntimeError("Could not generate the personality: " + (detail[-1200:] or "Hermes exited without an error message"))
+        result = re.sub(r"\x1b\[[0-9;]*m", "", completed.stdout).strip()
+        # Hermes startup warnings can appear on stdout despite -Q. Keep the
+        # actual Markdown rather than saving toolset/scanner warnings as identity.
+        heading = re.search(r"^#{1,6}\s+(?:Role(?: and purpose)?|Purpose|Identity)\b", result, re.I | re.M)
+        if heading:
+            result = result[heading.start():]
         result = re.sub(r"^```(?:markdown|md)?\s*", "", result, flags=re.IGNORECASE)
         result = re.sub(r"\s*```$", "", result).strip()
         if result.lower().startswith("soul.md\n"):
@@ -1667,10 +1702,8 @@ Role and specialty requested by the user: {inferred_role}
         if len(result) > 50000:
             raise RuntimeError("Hermes returned an unusually long personality. Try again with a shorter role description.")
         word_count = len(re.findall(r"\b[\w'-]+\b", result))
-        required_sections = ("Role and purpose", "Core strengths", "How to work", "Communication", "Boundaries and quality bar")
-        sections_present = sum(bool(re.search(r"^#{1,6}\s+" + re.escape(section) + r"\s*$", result, re.I | re.M)) for section in required_sections)
-        if word_count < 70 or sections_present < 4:
-            raise RuntimeError("Hermes returned an incomplete or unstructured personality. Check the generator profile’s model and try again.")
+        if word_count < 40:
+            raise RuntimeError("The model returned fewer than 40 words. Try a more specific role or another text model.")
         self.send_json({"ok": True, "personality": result, "generator_profile": source,
                         "provider": provider, "model": model})
 
@@ -1739,7 +1772,7 @@ Candidates:
 {candidate_json}
 """
         try:
-            completed = run_isolated_generation(source, ["chat", "-q", prompt, "-Q", "--source", "tool",
+            completed = run_isolated_generation(source, ["chat", "--cli", "-q", prompt, "-Q", "--source", "tool",
                                                      "--provider", provider, "--model", model,
                                                      "--toolsets", "__hermes_lw_no_tools__", "--ignore-rules"], provider, model)
         except subprocess.TimeoutExpired as exc:
