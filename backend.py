@@ -1690,8 +1690,6 @@ class Handler(BaseHTTPRequestHandler):
         role = str(p.get("role", "")).strip()
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", name):
             raise ValueError("Use a profile ID with lowercase letters, numbers, and hyphens (up to 40 characters)")
-        if name == "default" or name in profile_slugs():
-            raise ValueError("Choose a new profile ID before generating its personality")
         if len(role) > 2000:
             raise ValueError("Keep the role description under 2,000 characters")
         source = safe_slug(str(p.get("generator_profile", "default")))

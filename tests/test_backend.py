@@ -183,6 +183,12 @@ class BackendTests(unittest.TestCase):
                 self.handler.generate_profile_prompt({"name": "reviewer", "generator_profile": "default", "provider": "openrouter", "model": "example/selected"})
         self.assertNotIn("session_id", str(error.exception))
 
+    def test_personality_can_be_generated_for_existing_profile(self):
+        draft = "# Role and purpose\n" + "Review code with evidence and verify important findings carefully. " * 10
+        with patch.object(backend, "run_isolated_generation", return_value=subprocess.CompletedProcess([], 0, draft, "")):
+            self.handler.generate_profile_prompt({"name": "default", "generator_profile": "default", "provider": "openrouter", "model": "example/model"})
+        self.assertEqual(self.responses[-1][1]["personality"], draft.strip())
+
     def test_scanner_warning_does_not_masquerade_as_generation_error(self):
         result = subprocess.CompletedProcess([], 1, "Warning: Unknown toolsets: __hermes_lw_no_tools__\n⚠ tirith security scanner enabled but not available — command scanning will use pattern matching only", "session_id: example")
         with patch.object(backend, "run_isolated_generation", return_value=result):
