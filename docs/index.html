@@ -79,14 +79,14 @@
     <nav class="side" aria-label="Page sections">
       <b>On this page</b>
       <a href="#overview">What it does</a><a href="#screenshots">Screenshots</a><a href="#install">Install</a><a href="#first-run">First run</a>
-      <a href="#profiles">Profiles</a><a href="#providers">Providers and keys</a><a href="#models">Model catalog</a><a href="#advisor">Task Advisor</a>
+      <a href="#connections">Hermes connections</a><a href="#profiles">Profiles</a><a href="#providers">Providers and keys</a><a href="#models">Model catalog</a><a href="#advisor">Task Advisor</a>
       <a href="#tasks">Tasks and profile access</a><a href="#projects">Projects</a><a href="#extensions">Plugins and tools</a><a href="#cost">Spend limits</a><a href="#troubleshooting">Troubleshooting</a>
     </nav>
 
     <main>
       <section id="overview">
         <h2>What Hermes LW does</h2>
-        <p class="lead">It gives you a visual control surface for the Hermes installation already on your machine. Hermes LW reads and updates Hermes profile files and boards through the Hermes CLI; Quickshell renders the desktop interface.</p>
+        <p class="lead">It gives you a visual control surface for multiple Hermes instances. The connection tabs can target Hermes on this computer, an SSH-connected VPS, or a token-protected HTTPS Hermes LW gateway. Quickshell renders the desktop interface and every profile, project, board, and prompt action is routed to the active instance.</p>
         <div class="grid">
           <article class="card"><h3>Profiles</h3><p>Create, clone, edit, pause, resume, and delete profiles. Change model, provider, reasoning level, API credentials, and complete <code>SOUL.md</code> personality.</p></article>
           <article class="card"><h3>Models</h3><p>Browse the selected provider’s catalog, search by model and capability, group by publisher or modality, filter input/output cost independently, and favorite models.</p></article>
@@ -108,7 +108,7 @@
           <figure><a href="assets/screenshots/plugins-tools.png"><img src="assets/screenshots/plugins-tools.png" alt="Profile-scoped plugins, tools, and MCP apps" loading="lazy"></a><figcaption><b>Plugins and Tools.</b> Manage tools and MCP apps for the selected profile.</figcaption></figure>
           <figure><a href="assets/screenshots/options.png"><img src="assets/screenshots/options.png" alt="Hermes LW options page with global settings and shortcuts" loading="lazy"></a><figcaption><b>Options.</b> Change global preferences and review local connection details.</figcaption></figure>
         </div>
-        <div class="notice warn"><b>Current screen note:</b> the provided screenshot set predates the new Task Advisor and the latest task runtime-limit form. The README and screenshots in the repository are the source assets; the live guide will be updated as fresh captures are available.</div>
+        <div class="notice warn"><b>Screenshot note:</b> the provided screenshot set predates the new Task Advisor, runtime limit, and connection tabs. The connection walkthrough below describes the current build; fresh captures can be added after visual review with demo data.</div>
       </section>
 
       <section id="install">
@@ -129,6 +129,57 @@ cd hermes-lw
         <div class="step"><div class="num">2</div><div><h3>Select a profile</h3><p>Choose an existing profile from the sidebar, or create a new one. Profile-specific settings are edited in <b>Profiles</b> or <b>Models &amp; Providers</b>.</p></div></div>
         <div class="step"><div class="num">3</div><div><h3>Set a provider</h3><p>Open <b>Provider Connections</b> from Options, select the profile and provider, enter its model ID and key if required, then save. OAuth-backed providers use Hermes’ own login flow.</p></div></div>
         <div class="step"><div class="num">4</div><div><h3>Browse models and create a project</h3><p>Open the model catalog to check the selected backend’s available models. Create a project to get an isolated Hermes Kanban board, then add a task.</p></div></div>
+      </section>
+
+      <section id="connections">
+        <h2>Hermes connections and instance tabs</h2>
+        <p>The connection strip at the top of the workspace represents Hermes installations. Profiles remain inside their instance: a profile named <code>default</code> on a VPS is separate from <code>default</code> on this computer. Switching tabs reloads that instance’s profiles, projects, model catalog, prompts, settings, and task boards.</p>
+        <div class="grid">
+          <article class="card"><h3>This computer</h3><p>Always available. Hermes LW runs its local control service on loopback and reads the Hermes CLI and data in the current Linux account.</p></article>
+          <article class="card"><h3>SSH / VPS</h3><p>Use an OpenSSH config alias or <code>user@host</code>. Hermes LW opens a loopback-only SSH tunnel and confirms that the remote Hermes LW API responds before marking the tab connected.</p></article>
+          <article class="card"><h3>HTTPS / Cloud</h3><p>Connect to a TLS-protected Hermes LW gateway on a VPS or cloud host. The local service sends the saved bearer token server-to-server; the token is not returned to the UI.</p></article>
+        </div>
+        <details open><summary>Connect a remote VPS through SSH</summary><div class="inside">
+          <ol>
+            <li>Install Hermes Agent, Python 3, PyYAML, and this Hermes LW repository on the remote account. Keep the app version in sync with the local one.</li>
+            <li>Verify your existing SSH key works from this computer, for example <code>ssh hermes-vps</code>. A host alias in <code>~/.ssh/config</code> is supported; you can also enter <code>user@host</code> and the SSH port.</li>
+            <li>On the VPS, create a user service. Replace the <code>ExecStart</code> path with the location where you cloned Hermes LW:
+              <pre><code>mkdir -p ~/.config/systemd/user
+cat &gt; ~/.config/systemd/user/hermes-lw.service &lt;&lt;'EOF'
+[Unit]
+Description=Hermes LW remote control API
+After=network.target
+
+[Service]
+Type=simple
+Environment=HERMES_LW_PORT=18731
+ExecStart=/usr/bin/python3 /home/USER/Projects/hermes-control/backend.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user daemon-reload
+systemctl --user enable --now hermes-lw.service
+systemctl --user status hermes-lw.service</code></pre>
+            </li>
+            <li>If the service must survive logout, enable lingering for the VPS account with <code>sudo loginctl enable-linger USER</code>. Confirm the Hermes CLI is available to the user service’s <code>PATH</code>.</li>
+            <li>In Hermes LW, choose <b>Connect</b>, then <b>SSH / VPS</b>. Enter a tab name, SSH host, SSH port, and remote Hermes LW port. Click <b>Save and connect</b>. The status dot turns blue when the tunnel and API check succeed.</li>
+          </ol>
+          <p>The remote service stays bound to <code>127.0.0.1</code>; do not open its port in the VPS firewall. Closing the tab ends the local tunnel and removes the saved connection, but does not stop or edit the remote Hermes service.</p>
+        </div></details>
+        <details><summary>Connect a cloud or VPS gateway over HTTPS</summary><div class="inside">
+          <ol>
+            <li>Run Hermes LW’s <code>backend.py</code> on the remote host, bound to loopback. Install a TLS reverse proxy such as Caddy or Nginx in front of it.</li>
+            <li>Generate a gateway token with <code>openssl rand -hex 32</code>. Store it in a file readable only by the service account, for example <code>~/.config/hermes-lw/gateway.env</code>, as <code>HERMES_LW_TOKEN=YOUR_RANDOM_VALUE</code>; set permissions to <code>chmod 600</code>.</li>
+            <li>Add <code>EnvironmentFile=%h/.config/hermes-lw/gateway.env</code> to the systemd service and restart it. The token makes the remote Hermes LW API require <code>Authorization: Bearer …</code>.</li>
+            <li>Configure the reverse proxy for a valid HTTPS certificate and forward requests to <code>http://127.0.0.1:18731</code>, including the <code>Authorization</code> header. Do not expose port 18731 directly or run this endpoint over public plain HTTP.</li>
+            <li>Choose <b>Connect → HTTPS / Cloud</b>. Enter the public HTTPS base URL and the same random gateway token. Hermes LW probes the endpoint when the tab opens. The local connection manager stores the token in <code>~/.local/share/hermes-control/connections.json</code> with mode <code>0600</code>; it is not encrypted with the system keychain.</li>
+          </ol>
+        </div></details>
+        <div class="notice warn"><b>Compatibility boundary.</b> The HTTPS / Cloud choice connects to a Hermes LW API endpoint running this project’s backend. A generic <code>hermes serve</code> endpoint or Nous-managed Hermes Cloud account does not expose this app’s profile, provider, plugin, and Kanban routes, and direct OAuth sign-in is not implemented here. This connection type is for a Hermes LW instance you host on a VPS or cloud machine.</div>
+        <p>Connection names persist locally. Tabs show a connection type/status dot; click a tab to switch instances. The active tab remembers its selected project, profile, and page while this app is open. Requests from an old tab are ignored after switching, and a dropped SSH tunnel is re-established before retrying the data refresh.</p>
       </section>
 
       <section id="profiles">
@@ -208,7 +259,7 @@ cd hermes-lw
 
       <section id="troubleshooting">
         <h2>Troubleshooting</h2>
-        <details><summary>The UI says Hermes is disconnected</summary><div class="inside"><p>Launch the app with <code>./launch.sh</code>; it starts the backend at <code>127.0.0.1:18731</code>. Check <code>/tmp/hermes-control-backend.log</code> for backend startup errors.</p></div></details>
+        <details><summary>The UI says Hermes is disconnected</summary><div class="inside"><p>For the local tab, launch with <code>./launch.sh</code>; it starts the backend at <code>127.0.0.1:18731</code>. For SSH tabs, check the alias/key, remote service status, and remote port; SSH itself can succeed while the service is stopped. For HTTPS tabs, confirm the TLS certificate, reverse proxy, URL, and gateway token. Check <code>/tmp/hermes-control-backend.log</code> for local startup errors.</p></div></details>
         <details><summary>No models appear</summary><div class="inside"><p>Open Models &amp; Providers and select the same provider you configured for the profile. Confirm its credentials are saved. Some Hermes providers return only model IDs; Hermes LW labels unavailable pricing instead of guessing.</p></div></details>
         <details><summary>Hermes reports “task not found” or assignment is rejected</summary><div class="inside"><p>Refresh the board. If the task came from another Hermes client, edit Task Details and explicitly choose allowed profiles before assigning it. Hermes LW deliberately treats tasks without its policy metadata as eligible for nobody.</p></div></details>
         <details><summary>A task timed out</summary><div class="inside"><p>The worker reached its configured maximum runtime. The new Hermes LW form sets one attempt, so the task should block rather than retry automatically. Review task logs and usage with your provider before deciding whether to start it again.</p></div></details>

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import ast
+import atexit
 import json
 import math
 import os
@@ -11,6 +12,7 @@ import re
 import secrets
 import shutil
 import shlex
+import socket
 import subprocess
 import threading
 import time
@@ -30,8 +32,11 @@ PROFILES = HERMES / "profiles"
 ESTIMATES = HOME / ".local/share/hermes-control/estimates.json"
 APP_SETTINGS = HOME / ".local/share/hermes-control/settings.json"
 MODEL_CACHE = HOME / ".cache/hermes-control/openrouter-models.json"
-PORT = 18731
+PORT = int(os.environ.get("HERMES_LW_PORT", "18731"))
 LOCK = threading.Lock()
+CONNECTIONS_PATH = HOME / ".local/share/hermes-control/connections.json"
+TUNNEL_LOCK = threading.Lock()
+TUNNELS: dict[str, tuple[subprocess.Popen, int]] = {}
 MODEL_CACHE_SECONDS = 6 * 60 * 60
 MAX_REQUEST_BYTES = 1_048_576
 
@@ -53,6 +58,196 @@ def atomic_write(path: Path, content: str, mode: int = 0o600) -> None:
             temp.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def read_connections() -> list[dict]:
+    try:
+        data = json.loads(CONNECTIONS_PATH.read_text())
+        return data if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def save_connections(items: list[dict]) -> None:
+    atomic_write(CONNECTIONS_PATH, json.dumps(items, indent=2) + "\n", 0o600)
+
+
+def connection_status(item: dict) -> dict:
+    result = {key: item.get(key) for key in ("id", "name", "kind", "host", "ssh_port", "remote_port", "url")}
+    result["kind"] = item.get("kind", "ssh")
+    if result["kind"] == "https":
+        result.update(connected=False, url=item.get("url", ""))
+        return result
+    with TUNNEL_LOCK:
+        state = TUNNELS.get(item["id"])
+        if state and state[0].poll() is None:
+            result.update(connected=True, url=f"http://127.0.0.1:{state[1]}")
+        else:
+            TUNNELS.pop(item["id"], None)
+            result.update(connected=False, url="")
+    return result
+
+
+def save_connection(payload: dict) -> dict:
+    name = str(payload.get("name", "")).strip()
+    if not name or len(name) > 64:
+        raise ValueError("Connection name must be 1–64 characters")
+    items = read_connections()
+    identifier = str(payload.get("id", ""))
+    existing = next((row for row in items if row.get("id") == identifier), None)
+    kind = str(payload.get("kind", "ssh"))
+    if kind == "ssh":
+        host = str(payload.get("host", "")).strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.@-]{1,255}", host) or host.startswith("-"):
+            raise ValueError("Use an SSH config alias or user@host; spaces and SSH command flags are not allowed")
+        try:
+            ssh_port = int(payload.get("ssh_port", 22))
+            remote_port = int(payload.get("remote_port", PORT))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("SSH and remote service ports must be whole numbers") from exc
+        if not 1 <= ssh_port <= 65535 or not 1024 <= remote_port <= 65535:
+            raise ValueError("Choose a valid SSH port and a remote Hermes LW port from 1024 to 65535")
+        item = {"kind": kind, "host": host, "ssh_port": ssh_port, "remote_port": remote_port}
+    elif kind == "https":
+        url = str(payload.get("url", "")).strip().rstrip("/")
+        try:
+            parsed = urllib.parse.urlsplit(url)
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("Enter a valid HTTPS gateway URL") from exc
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or (port is not None and not 1 <= port <= 65535):
+            raise ValueError("Cloud / VPS gateways need an HTTPS URL without embedded credentials, query, or fragment")
+        if len(url) > 512:
+            raise ValueError("Gateway URL is too long")
+        token = str(payload.get("token", ""))
+        if not token and existing:
+            token = str(existing.get("token", ""))
+        if not token and not existing:
+            raise ValueError("Enter the Hermes LW gateway access token")
+        if not re.fullmatch(r"[A-Za-z0-9._~+/=-]{16,8192}", token):
+            raise ValueError("Gateway token must be 16–8,192 URL-safe characters")
+        item = {"kind": kind, "url": url, "token": token}
+    else:
+        raise ValueError("Choose SSH / VPS or HTTPS / Cloud")
+    if not existing:
+        identifier = secrets.token_hex(8)
+    if any(row.get("id") != identifier and row.get("name", "").casefold() == name.casefold() for row in items):
+        raise ValueError("Connection names must be unique")
+    for row in items:
+        if row.get("id") == identifier or row.get("kind") != kind:
+            continue
+        duplicate = (row.get("host", "").casefold() == item.get("host", "").casefold() and
+                     row.get("ssh_port") == item.get("ssh_port") and row.get("remote_port") == item.get("remote_port")) if kind == "ssh" else row.get("url", "").casefold() == item.get("url", "").casefold()
+        if duplicate:
+            raise ValueError("This Hermes instance is already saved as another tab")
+    item.update(id=identifier, name=name)
+    items = [item if row.get("id") == identifier else row for row in items]
+    if not any(row.get("id") == identifier for row in items):
+        items.append(item)
+    save_connections(items)
+    return item
+
+
+def stop_tunnel(identifier: str) -> None:
+    with TUNNEL_LOCK:
+        state = TUNNELS.pop(identifier, None)
+    if state and state[0].poll() is None:
+        state[0].terminate()
+        try:
+            state[0].wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            state[0].kill()
+            state[0].wait(timeout=2)
+
+
+def stop_all_tunnels() -> None:
+    with TUNNEL_LOCK:
+        identifiers = list(TUNNELS)
+    for identifier in identifiers:
+        stop_tunnel(identifier)
+
+
+atexit.register(stop_all_tunnels)
+
+
+def connect_tunnel(identifier: str) -> dict:
+    item = next((row for row in read_connections() if row.get("id") == identifier), None)
+    if not item:
+        raise ValueError("Saved remote connection not found")
+    if item.get("kind") == "https":
+        return connection_status(item)
+    current = connection_status(item)
+    if current["connected"]:
+        return current
+    ssh = shutil.which("ssh")
+    if not ssh:
+        raise RuntimeError("OpenSSH client is required for remote connections")
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    local_port = sock.getsockname()[1]
+    sock.close()
+    args = [ssh, "-N", "-T", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+            "-p", str(item["ssh_port"]), "-L", f"127.0.0.1:{local_port}:127.0.0.1:{item['remote_port']}", item["host"]]
+    process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               start_new_session=True, close_fds=True)
+    with TUNNEL_LOCK:
+        TUNNELS[identifier] = (process, local_port)
+    url = f"http://127.0.0.1:{local_port}"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            stop_tunnel(identifier)
+            raise RuntimeError("SSH tunnel failed. Check the host, SSH key, and remote Hermes LW service.")
+        try:
+            request = urllib.request.Request(url + "/api/state", headers={"Host": f"127.0.0.1:{local_port}"})
+            with urllib.request.urlopen(request, timeout=1) as response:
+                state = json.loads(response.read())
+                if isinstance(state, dict) and "profiles" in state:
+                    return {**connection_status(item), "url": url, "connected": True}
+        except (OSError, ValueError, urllib.error.URLError):
+            time.sleep(0.2)
+    stop_tunnel(identifier)
+    raise RuntimeError("SSH connected, but no Hermes LW API answered on the remote loopback port")
+
+
+def request_remote_connection(payload: dict) -> tuple[dict, int]:
+    identifier = str(payload.get("id", ""))
+    item = next((row for row in read_connections() if row.get("id") == identifier), None)
+    if not item or item.get("kind") != "https":
+        raise ValueError("HTTPS gateway connection not found")
+    method = str(payload.get("method", "GET")).upper()
+    if method not in ("GET", "POST"):
+        raise ValueError("Remote gateway supports GET and POST requests only")
+    path = str(payload.get("path", ""))
+    parsed_path = urllib.parse.urlsplit(path)
+    if not parsed_path.path.startswith("/api/") or parsed_path.path.startswith("//") or ".." in parsed_path.path.split("/"):
+        raise ValueError("Invalid remote API path")
+    body = None if method == "GET" else json.dumps(payload.get("body") or {}, ensure_ascii=False).encode("utf-8")
+    try:
+        timeout = min(300, max(1, int(payload.get("timeout_ms", 20000)) / 1000))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Remote timeout must be a whole number of milliseconds") from exc
+    request = urllib.request.Request(item["url"] + path, data=body, method=method, headers={
+        "Authorization": "Bearer " + item["token"], "Accept": "application/json",
+        **({"Content-Type": "application/json"} if body is not None else {}),
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status, raw = response.status, response.read(1_048_577)
+    except urllib.error.HTTPError as exc:
+        status, raw = exc.code, exc.read(1_048_577)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError("Could not reach HTTPS gateway. Check its URL, TLS certificate, and auth token.") from exc
+    if len(raw) > 1_048_576:
+        raise ValueError("Remote API response is too large")
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise RuntimeError("Remote server did not return a Hermes LW JSON response") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("Remote Hermes LW returned an unexpected response")
+    return data, status
 
 
 def cmd(*args: str, timeout: int = 12) -> str:
@@ -885,10 +1080,32 @@ class Handler(BaseHTTPRequestHandler):
     def request_is_local(self):
         host = (self.headers.get("Host") or "").lower()
         origin = self.headers.get("Origin")
-        valid_hosts = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
-        valid_origins = {None, "null", "file://", f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
-        opaque_cross_site = origin == "null" and self.headers.get("Sec-Fetch-Site", "").lower() == "cross-site"
-        if host not in valid_hosts or origin not in valid_origins or opaque_cross_site:
+        def loopback_authority(value: str) -> bool:
+            try:
+                parsed = urllib.parse.urlsplit("//" + value)
+                return parsed.hostname in {"127.0.0.1", "localhost"} and (parsed.port is None or 1 <= parsed.port <= 65535)
+            except ValueError:
+                return False
+        token = os.environ.get("HERMES_LW_TOKEN", "")
+        supplied = self.headers.get("Authorization", "")
+        authorized = not token or (supplied.startswith("Bearer ") and secrets.compare_digest(supplied[7:], token))
+        valid_origins = origin in (None, "null", "file://") or bool(
+            origin and origin.startswith("http://") and loopback_authority(origin[7:]))
+        valid_host = loopback_authority(host)
+        if token:
+            try:
+                parsed_host = urllib.parse.urlsplit("//" + host)
+                valid_host = bool(parsed_host.hostname and not any(ch in host for ch in "\r\n /\\"))
+            except ValueError:
+                valid_host = False
+        if not loopback_authority(host) and not token:
+            self.send_json({"error": "Set HERMES_LW_TOKEN before serving Hermes LW through a remote HTTPS gateway"}, 403)
+            return False
+        opaque_cross_site = origin == "null" and self.headers.get("Sec-Fetch-Site", "").lower() == "cross-site" and not token
+        if not valid_host or not valid_origins or opaque_cross_site or not authorized:
+            if token and not authorized:
+                self.send_json({"error": "Invalid Hermes LW gateway token"}, 401)
+                return False
             self.send_json({"error": "Only the local Hermes LW app may use this API"}, 403)
             return False
         return True
@@ -902,7 +1119,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         origin = self.headers.get("Origin")
         local_opaque_origin = origin == "null" and self.headers.get("Sec-Fetch-Site", "").lower() != "cross-site"
-        if local_opaque_origin or origin in ("file://", f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"):
+        if local_opaque_origin or origin == "file://" or (
+                origin and origin.startswith("http://") and any(host in origin for host in ("http://127.0.0.1", "http://localhost"))):
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
@@ -935,7 +1153,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self.request_is_local(): return
         try:
             route = urllib.parse.urlparse(self.path)
-            if route.path == "/api/state":
+            if route.path == "/api/connections":
+                self.send_json({"connections": [connection_status(row) for row in read_connections()]})
+            elif route.path == "/api/state":
                 query = urllib.parse.parse_qs(route.query)
                 self.send_json(dashboard(str(query.get("board", [""])[0])))
             elif self.path == "/api/providers":
@@ -971,7 +1191,28 @@ class Handler(BaseHTTPRequestHandler):
         if not self.request_is_local(): return
         try:
             payload = self.read_body()
-            if self.path == "/api/profile/save":
+            if self.path == "/api/connections/save":
+                if payload.get("id"):
+                    stop_tunnel(str(payload["id"]))
+                item = save_connection(payload)
+                self.send_json({"ok": True, "connection": connection_status(item)})
+            elif self.path == "/api/connections/connect":
+                self.send_json({"ok": True, "connection": connect_tunnel(str(payload.get("id", "")))})
+            elif self.path == "/api/connections/disconnect":
+                identifier = str(payload.get("id", ""))
+                stop_tunnel(identifier)
+                item = next((row for row in read_connections() if row.get("id") == identifier), None)
+                self.send_json({"ok": True, "connection": connection_status(item) if item else None})
+            elif self.path == "/api/connections/remove":
+                identifier = str(payload.get("id", ""))
+                stop_tunnel(identifier)
+                items = [row for row in read_connections() if row.get("id") != identifier]
+                save_connections(items)
+                self.send_json({"ok": True, "connections": [connection_status(row) for row in items]})
+            elif self.path == "/api/connections/request":
+                data, status = request_remote_connection(payload)
+                self.send_json(data, status)
+            elif self.path == "/api/profile/save":
                 self.save_profile(payload)
             elif self.path == "/api/profile/key":
                 slug = safe_slug(str(payload.get("slug", "")))

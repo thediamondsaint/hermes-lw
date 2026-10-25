@@ -21,6 +21,11 @@ ShellRoot {
   property var detailAllowedProfiles: []
   property var detailProfileBudgets: ({})
   property bool backendConnected: false
+  property var connections: [{id: "local", name: "This computer", kind: "local", url: "http://127.0.0.1:18731", connected: false, page: "Overview", board: "", selected_profile: ""}]
+  property string activeConnectionId: "local"
+  property int connectionEpoch: 0
+  property bool reconnecting: false
+  property bool showConnectionEditor: false
   property int pendingRequests: 0
   property string statusFilterValue: "all"
   property string assigneeFilterValue: "all"
@@ -232,7 +237,7 @@ ShellRoot {
     root.page = "Kanban"
   }
   function modalOpen() {
-    return root.showModels || root.showProviderManager || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor
+    return root.showModels || root.showProviderManager || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor || root.showConnectionEditor
   }
   property var catalogDisplayItems: {
     var rows = [], items = root.catalogItems.slice(0, root.catalogVisibleLimit), index = 0
@@ -337,9 +342,125 @@ ShellRoot {
   readonly property color laneFill: darkMode ? "#172333" : "#f4f3ed"
   readonly property color hoverFill: darkMode ? "#25384d" : "#e8f0fb"
 
-  function request(method, path, payload, callback, onFailure, timeoutMs) {
+  function activeConnection() {
+    var rows = root.connections.filter(function(c) { return c.id === root.activeConnectionId })
+    return rows.length ? rows[0] : root.connections[0]
+  }
+  function activeApiBase() {
+    var c = root.activeConnection()
+    return c && c.url ? c.url : "http://127.0.0.1:18731"
+  }
+  function localRequest(method, path, payload, callback, onFailure, timeoutMs) {
+    root.request(method, path, payload, callback, onFailure, timeoutMs, "http://127.0.0.1:18731", true)
+  }
+  function saveActiveTabState() {
+    var rows = root.connections.slice(0)
+    for (var i = 0; i < rows.length; ++i) if (rows[i].id === root.activeConnectionId) {
+      rows[i] = Object.assign({}, rows[i], {page: root.page, board: root.currentBoard, selected_profile: root.selectedProfile})
+    }
+    root.connections = rows
+  }
+  function loadConnections() {
+    root.localRequest("GET", "/api/connections", null, function(data) {
+      var saved = data.connections || []
+      var local = root.connections[0]
+      var rows = [local].concat(saved)
+      root.connections = rows
+      if (root.activeConnectionId !== "local" && !rows.some(function(c) { return c.id === root.activeConnectionId })) root.activeConnectionId = "local"
+      root.activateConnection(root.activeConnectionId, true)
+    }, function(error) { root.notice = error.error || "Could not load connections" })
+  }
+  function setConnection(updated) {
+    var rows = root.connections.slice(0), found = false
+    for (var i = 0; i < rows.length; ++i) if (rows[i].id === updated.id) { rows[i] = Object.assign({}, rows[i], updated); found = true }
+    if (!found) rows.push(updated)
+    root.connections = rows
+  }
+  function activateConnection(id, initial) {
+    var target = root.connections.filter(function(c) { return c.id === id })[0]
+    if (!target) return
+    if (!initial && id === root.activeConnectionId && target.connected) return
+    root.saveActiveTabState()
+    root.activeConnectionId = id
+    root.connectionEpoch += 1
+    root.backendConnected = false
+    root.profiles = []; root.projects = []; root.tasks = []; root.projectInfo = ({})
+    root.selectedTask = null; root.selectedTaskDetail = ({}); root.savedViews = []; root.taskTemplates = []
+    root.modelCatalog = []; root.modelCatalogRequestId += 1
+    root.selectedProfile = target.selected_profile || ""
+    root.currentBoard = target.board || ""
+    root.page = target.page || "Overview"
+    if (target.kind === "local" || target.kind === "https" || target.connected) {
+      if (target.kind === "local") target.url = "http://127.0.0.1:18731"
+      root.refresh(target.board || "")
+      root.loadModelProviders()
+    } else {
+      root.notice = "Opening SSH tunnel to " + target.name + "…"
+      root.localRequest("POST", "/api/connections/connect", {id: target.id}, function(data) {
+        root.setConnection(data.connection)
+        if (root.activeConnectionId === id) {
+          root.notice = "Connected to " + target.name
+          root.refresh(target.board || "")
+          root.loadModelProviders()
+        }
+      }, function(error) {
+        if (root.activeConnectionId === id) { root.backendConnected = false; root.notice = error.error || "Could not open SSH tunnel" }
+      }, 15000)
+    }
+  }
+  function createRemoteConnection() {
+    var kind = connectionKind.currentIndex === 0 ? "ssh" : "https"
+    var payload = {name: connectionName.text.trim(), kind: kind}
+    if (kind === "ssh") {
+      payload.host = connectionHost.text.trim(); payload.ssh_port = Number(connectionSshPort.text) || 22
+      payload.remote_port = Number(connectionRemotePort.text) || 18731
+    } else { payload.url = connectionUrl.text.trim(); payload.token = connectionToken.text }
+    root.localRequest("POST", "/api/connections/save", payload, function(data) {
+      connectionName.text = ""; connectionHost.text = ""; connectionSshPort.text = "22"; connectionRemotePort.text = "18731"; connectionUrl.text = ""; connectionToken.text = ""
+      root.setConnection(data.connection); root.showConnectionEditor = false; root.activateConnection(data.connection.id)
+    }, function(error) { root.notice = error.error || "Could not save connection" })
+  }
+  function closeRemoteConnection(id) {
+    if (id === "local") return
+    if (id === root.activeConnectionId) root.activateConnection("local")
+    root.localRequest("POST", "/api/connections/remove", {id: id}, function(data) {
+      root.connections = [root.connections[0]].concat(data.connections || [])
+      if (root.activeConnectionId === id) root.activateConnection("local")
+      root.notice = "Remote connection removed; the remote Hermes instance was not changed"
+    })
+  }
+  function reconnectActiveConnection() {
+    var c = root.activeConnection()
+    if (!c || c.kind === "local" || root.reconnecting) return
+    root.reconnecting = true
+    root.localRequest("POST", "/api/connections/connect", {id: c.id}, function(data) {
+      root.setConnection(data.connection); root.reconnecting = false
+      if (root.activeConnectionId === c.id) { root.refresh(root.currentBoard); root.loadModelProviders() }
+    }, function() { root.reconnecting = false; root.setConnection(Object.assign({}, c, {connected: false, url: ""})) }, 15000)
+  }
+
+  function request(method, path, payload, callback, onFailure, timeoutMs, baseOverride, managerOnly) {
+    var active = root.activeConnection()
+    if (!managerOnly && !baseOverride && active && active.kind === "https") {
+      var httpsConnectionId = active.id
+      var httpsEpoch = root.connectionEpoch
+      root.localRequest("POST", "/api/connections/request", {id: active.id, method: method, path: path, body: payload || {}, timeout_ms: timeoutMs || 20000}, function(value) {
+        if (root.activeConnectionId !== httpsConnectionId || root.connectionEpoch !== httpsEpoch) return
+        root.backendConnected = true
+        root.setConnection(Object.assign({}, root.activeConnection(), {connected: true}))
+        if (callback) callback(value)
+      }, function(error) {
+        if (root.activeConnectionId !== httpsConnectionId || root.connectionEpoch !== httpsEpoch) return
+        root.backendConnected = false
+        root.setConnection(Object.assign({}, root.activeConnection(), {connected: false}))
+        if (onFailure) onFailure(error)
+      }, timeoutMs || 45000)
+      return
+    }
     var xhr = new XMLHttpRequest()
-    xhr.open(method, "http://127.0.0.1:18731" + path)
+    var requestedConnection = root.activeConnectionId
+    var requestedEpoch = root.connectionEpoch
+    xhr.open(method, (baseOverride || root.activeApiBase()) + path)
     xhr.timeout = timeoutMs || 20000
     xhr.setRequestHeader("Content-Type", "application/json")
     root.pendingRequests += 1
@@ -348,14 +469,25 @@ ShellRoot {
     xhr.onreadystatechange = function() {
       if (xhr.readyState === XMLHttpRequest.DONE) {
         finish()
+        if (!managerOnly && (requestedConnection !== root.activeConnectionId || requestedEpoch !== root.connectionEpoch)) return
         var value = {}
         try { value = JSON.parse(xhr.responseText) } catch (e) { value = {error: "Invalid response from Hermes LW"} }
-        if (xhr.status >= 200 && xhr.status < 300) { root.backendConnected = true; callback(value) }
-        else { root.backendConnected = xhr.status !== 0; root.notice = value.error || "Request failed"; if (onFailure) onFailure(value) }
+        if (xhr.status >= 200 && xhr.status < 300) { if (!managerOnly) root.backendConnected = true; callback(value) }
+        else { if (!managerOnly) root.backendConnected = xhr.status !== 0; root.notice = value.error || "Request failed"; if (onFailure) onFailure(value) }
       }
     }
-    xhr.onerror = function() { finish(); root.backendConnected = false; root.notice = "Hermes LW backend is unreachable"; if (onFailure) onFailure({error: root.notice}) }
-    xhr.ontimeout = function() { finish(); root.notice = "Hermes request timed out"; if (onFailure) onFailure({error: root.notice}) }
+    xhr.onerror = function() {
+      finish()
+      if (!managerOnly && (requestedConnection !== root.activeConnectionId || requestedEpoch !== root.connectionEpoch)) return
+      if (!managerOnly) {
+        root.backendConnected = false
+        var connection = root.activeConnection()
+        if (connection && connection.kind !== "local") { root.setConnection(Object.assign({}, connection, {connected: false, url: ""})); root.reconnectActiveConnection() }
+      }
+      root.notice = managerOnly ? "Local connection manager is unreachable" : "Hermes LW backend is unreachable"
+      if (onFailure) onFailure({error: root.notice})
+    }
+    xhr.ontimeout = function() { finish(); if (!managerOnly && (requestedConnection !== root.activeConnectionId || requestedEpoch !== root.connectionEpoch)) return; root.notice = "Hermes request timed out"; if (onFailure) onFailure({error: root.notice}) }
     xhr.send(payload ? JSON.stringify(payload) : "{}")
   }
   function refresh(boardSlug) {
@@ -373,6 +505,7 @@ ShellRoot {
       root.managerProfile = data.manager_profile || ""
       root.darkMode = data.theme === "dark"
       if (!root.selectedProfile && root.profiles.length) root.selectedProfile = root.profiles[0].slug
+      root.setConnection(Object.assign({}, root.activeConnection(), {connected: true, board: root.currentBoard, selected_profile: root.selectedProfile}))
     })
   }
   function openModelCatalog(providerOverride, profileOverride, baseUrlOverride) {
@@ -860,7 +993,8 @@ ShellRoot {
     hermesPrompt.text = prompt.body
   }
   function closeTopDialog() {
-    if (root.showModels) root.showModels = false
+    if (root.showConnectionEditor) root.showConnectionEditor = false
+    else if (root.showModels) root.showModels = false
     else if (root.showProviderManager) root.showProviderManager = false
     else if (root.showDeleteProfile) root.showDeleteProfile = false
     else if (root.showCreateProfile) root.showCreateProfile = false
@@ -909,9 +1043,9 @@ ShellRoot {
   Shortcut { sequence: "Ctrl+7"; onActivated: root.page = "Options" }
   Shortcut { sequence: "Ctrl+8"; onActivated: { root.page = "Plugins & Tools"; root.loadExtensions() } }
   Shortcut { sequence: "Ctrl+9"; onActivated: root.page = "Task Advisor" }
-  Shortcut { sequence: "Escape"; enabled: root.showModels || root.showProviderManager || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor; onActivated: root.closeTopDialog() }
+  Shortcut { sequence: "Escape"; enabled: root.showModels || root.showProviderManager || root.showDeleteProfile || root.showCreateProfile || root.showPromptEditor || root.selectedTask !== null || root.showHermes || root.showNewTask || root.showProjectEditor || root.showConnectionEditor; onActivated: root.closeTopDialog() }
   Timer { interval: 10000; running: root.pendingRequests === 0 && !root.modalOpen(); repeat: true; onTriggered: root.refresh() }
-  Component.onCompleted: { root.refresh(); root.loadModelProviders(); if (root.page === "Plugins & Tools") root.loadExtensions(root.selectedProfile, root.extensionPlatform) }
+  Component.onCompleted: { root.loadConnections(); if (root.page === "Plugins & Tools") root.loadExtensions(root.selectedProfile, root.extensionPlatform) }
   onSelectedProfileChanged: {
     if (root.page === "Plugins & Tools") root.loadExtensions(root.selectedProfile, root.extensionPlatform)
     var p = root.profileBySlug(root.selectedProfile)
@@ -1044,6 +1178,35 @@ ShellRoot {
             id: mainPane
             width: parent.width - 194; height: parent.height; spacing: 0
             Rectangle {
+              width: parent.width; height: 36; color: root.bg; border.color: root.border
+              Row { anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 6
+                Flickable { width: parent.width - 82; height: parent.height; clip: true; contentWidth: connectionTabRow.implicitWidth; contentHeight: height; flickableDirection: Flickable.HorizontalFlick; boundsBehavior: Flickable.StopAtBounds
+                  Row { id: connectionTabRow; height: parent.height; spacing: 4
+                    Repeater { model: root.connections
+                      delegate: Rectangle {
+                        required property var modelData
+                        width: Math.min(170, Math.max(96, modelData.name.length * 7 + 53)); height: 27; anchors.verticalCenter: parent.verticalCenter
+                        color: modelData.id === root.activeConnectionId ? root.surface : root.raised
+                        border.color: modelData.id === root.activeConnectionId ? root.accent : root.border
+                        Row { anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 4; spacing: 5
+                          Rectangle { width: 6; height: 6; radius: 3; color: modelData.kind === "local" || modelData.connected ? root.accent : root.amber; anchors.verticalCenter: parent.verticalCenter }
+                          Text { text: modelData.kind === "local" ? modelData.name : (modelData.kind === "ssh" ? "SSH · " : "Cloud · ") + modelData.name; color: modelData.id === root.activeConnectionId ? root.text : root.muted; font.pixelSize: 9; elide: Text.ElideRight; width: parent.width - (modelData.kind === "local" ? 19 : 34); anchors.verticalCenter: parent.verticalCenter }
+                          Text { visible: modelData.kind !== "local"; text: "×"; color: root.muted; font.pixelSize: 14; width: 13; horizontalAlignment: Text.AlignHCenter; anchors.verticalCenter: parent.verticalCenter
+                            MouseArea { anchors.fill: parent; onClicked: root.closeRemoteConnection(modelData.id) }
+                          }
+                        }
+                        MouseArea { anchors.fill: parent; anchors.rightMargin: modelData.kind === "local" ? 0 : 18; onClicked: root.activateConnection(modelData.id) }
+                      }
+                    }
+                  }
+                }
+                Rectangle { width: 74; height: 25; anchors.verticalCenter: parent.verticalCenter; color: root.accent; border.color: root.blue
+                  Row { anchors.centerIn: parent; spacing: 4; Text { text: "+"; color: "#ffffff"; font.pixelSize: 14; anchors.verticalCenter: parent.verticalCenter } Text { text: "Connect"; color: "#ffffff"; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter } }
+                  MouseArea { anchors.fill: parent; onClicked: { root.showConnectionEditor = true; connectionName.text = ""; connectionHost.text = ""; connectionSshPort.text = "22"; connectionRemotePort.text = "18731" } }
+                }
+              }
+            }
+            Rectangle {
               width: parent.width; height: 42
               gradient: Gradient { GradientStop { position: 0; color: root.darkMode ? "#405c85" : "#3c83d5" } GradientStop { position: 1; color: root.darkMode ? "#233b60" : "#174d9b" } }
               Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: "#0a3683" }
@@ -1057,7 +1220,7 @@ ShellRoot {
                 Text { text: root.darkMode ? "Dark" : "Light"; color: "#ffffff"; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter }
               }
             }
-            Item { width: parent.width; height: parent.height - 42
+            Item { width: parent.width; height: parent.height - 78
             // OVERVIEW: compact desktop workspace summary
             Column { anchors.fill: parent; anchors.margins: 12; spacing: 8; visible: root.page === "Overview"
               Row { width: parent.width; height: 25; spacing: 8
@@ -1307,8 +1470,8 @@ ShellRoot {
                 Rectangle { width: (parent.width - 12) / 2; height: parent.height; color: root.surface; border.color: root.border
                   Column { anchors.fill: parent; anchors.margins: 14; spacing: 10
                     Text { text: "HERMES CONNECTION"; color: root.blue; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.8 }
-                    Text { text: root.backendConnected ? "Connected to local Hermes LW service" : "Hermes LW service is disconnected"; color: root.backendConnected ? root.accent : root.red; font.pixelSize: 12; font.bold: true }
-                    Text { text: "http://127.0.0.1:18731  ·  local-only control API"; color: root.muted; font.pixelSize: 9 }
+                    Text { text: (root.backendConnected ? "Connected · " : "Disconnected · ") + (root.activeConnection().name || "This computer"); color: root.backendConnected ? root.accent : root.red; font.pixelSize: 12; font.bold: true }
+                    Text { text: root.activeConnection().kind === "local" ? "Local Hermes LW service · loopback only" : root.activeConnection().kind === "ssh" ? "SSH tunnel · " + root.activeConnection().host + ":" + root.activeConnection().remote_port : (root.activeConnection().url || "HTTPS gateway") + " · token protected"; color: root.muted; font.pixelSize: 9; elide: Text.ElideRight; width: parent.width }
                     Text { text: "Provider credentials and model selection are managed separately for each profile."; color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; width: parent.width }
                     Item { width: 1; height: 1; Layout.fillHeight: true }
                     Row { spacing: 8
@@ -1945,6 +2108,41 @@ ShellRoot {
               }
               Rectangle { width: 88; height: 36; radius: 2; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Cancel"; color: root.muted; font.pixelSize: 9 } MouseArea { anchors.fill: parent; onClicked: root.showCreateProfile = false } }
               Text { text: "Copied OpenRouter keys are removed unless you opt in; a new key overrides the copied key."; color: root.muted; font.pixelSize: 8; anchors.verticalCenter: parent.verticalCenter; width: parent.width - 225; wrapMode: Text.WordWrap }
+            }
+          }
+        }
+      }
+
+      // Delete profile confirmation
+      Rectangle { anchors.fill: parent; visible: root.showConnectionEditor; color: "#99070b10"; z: 50; MouseArea { anchors.fill: parent; onClicked: {} }
+        Rectangle { width: 540; height: connectionKind.currentIndex === 0 ? 486 : 470; radius: 2; color: root.surface; border.color: "#7f9db9"; anchors.centerIn: parent; MouseArea { anchors.fill: parent }
+          XpTitleBar { z: 2; anchors.top: parent.top; width: parent.width; caption: "Connect a Hermes instance"; darkMode: root.darkMode; onCloseRequested: root.showConnectionEditor = false }
+          Column { anchors.fill: parent; anchors.margins: 24; anchors.topMargin: 54; spacing: 9
+            Text { text: "Add a named Hermes connection tab"; color: root.text; font.pixelSize: 17; font.bold: true }
+            Text { text: "Each tab has its own profiles, projects, models, prompts, and task board."; color: root.muted; font.pixelSize: 9; wrapMode: Text.WordWrap; width: parent.width }
+            Text { text: "CONNECTION TYPE"; color: root.muted; font.pixelSize: 8; font.bold: true }
+            ComboBox { id: connectionKind; width: parent.width; height: 34; model: ["SSH / VPS (private tunnel)", "HTTPS / Cloud gateway"]; contentItem: Text { text: connectionKind.displayText; color: root.text; font.pixelSize: 9; verticalAlignment: Text.AlignVCenter; leftPadding: 9 } background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            Text { text: "TAB NAME"; color: root.muted; font.pixelSize: 8; font.bold: true }
+            TextField { id: connectionName; width: parent.width; height: 34; leftPadding: 9; placeholderText: "e.g. Home VPS, Work server"; color: root.text; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+            Column { visible: connectionKind.currentIndex === 0; width: parent.width; spacing: 8
+              Text { text: "SSH HOST (config alias or user@host)"; color: root.muted; font.pixelSize: 8; font.bold: true }
+              TextField { id: connectionHost; width: parent.width; height: 34; leftPadding: 9; placeholderText: "hermes-vps or charles@example.com"; color: root.text; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              Row { width: parent.width; spacing: 10
+                Column { width: (parent.width - 10) / 2; spacing: 4; Text { text: "SSH PORT"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { id: connectionSshPort; width: parent.width; height: 32; text: "22"; inputMethodHints: Qt.ImhDigitsOnly; color: root.text; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
+                Column { width: (parent.width - 10) / 2; spacing: 4; Text { text: "REMOTE HERMES LW PORT"; color: root.muted; font.pixelSize: 8; font.bold: true } TextField { id: connectionRemotePort; width: parent.width; height: 32; text: "18731"; inputMethodHints: Qt.ImhDigitsOnly; color: root.text; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } } }
+              }
+              Text { width: parent.width; text: "Uses your existing SSH keys. The remote Hermes LW service must be running and bound to 127.0.0.1 on that port."; color: root.muted; font.pixelSize: 8; wrapMode: Text.WordWrap }
+            }
+            Column { visible: connectionKind.currentIndex === 1; width: parent.width; spacing: 8
+              Text { text: "HTTPS GATEWAY URL"; color: root.muted; font.pixelSize: 8; font.bold: true }
+              TextField { id: connectionUrl; width: parent.width; height: 34; leftPadding: 9; placeholderText: "https://hermes.example.com"; color: root.text; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              Text { text: "HERMES LW GATEWAY TOKEN"; color: root.muted; font.pixelSize: 8; font.bold: true }
+              TextField { id: connectionToken; width: parent.width; height: 34; leftPadding: 9; echoMode: TextInput.Password; placeholderText: "Stored in a local owner-only file (0600)"; color: root.text; background: Rectangle { radius: 2; color: root.inputFill; border.color: root.border } }
+              Text { width: parent.width; text: "For a VPS or cloud host with HTTPS reverse proxy. The token is kept in the local connection manager and is never returned to the UI or sent to the browser directly."; color: root.muted; font.pixelSize: 8; wrapMode: Text.WordWrap }
+            }
+            Row { width: parent.width; spacing: 10
+              Rectangle { width: 142; height: 36; radius: 2; color: root.accent; Text { anchors.centerIn: parent; text: "Save and connect"; color: "#ffffff"; font.pixelSize: 9; font.bold: true } MouseArea { anchors.fill: parent; onClicked: root.createRemoteConnection() } }
+              Rectangle { width: 88; height: 36; radius: 2; color: root.raised; border.color: root.border; Text { anchors.centerIn: parent; text: "Cancel"; color: root.muted; font.pixelSize: 9 } MouseArea { anchors.fill: parent; onClicked: root.showConnectionEditor = false } }
             }
           }
         }

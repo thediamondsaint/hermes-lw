@@ -1,6 +1,6 @@
 # Hermes LW
 
-A native Quickshell prototype for controlling Hermes Agent profiles and the local Hermes Kanban board.
+A native Quickshell app for controlling Hermes Agent profiles and Kanban boards across local, SSH-connected, and HTTPS-hosted Hermes LW instances.
 
 ## Run
 
@@ -34,7 +34,7 @@ The **AI/Profiles** checkbox locally matches task words to profile names, models
 
 The [project guide](https://thediamondsaint.github.io/hermes-lw/) includes a step-by-step setup walkthrough, screenshots, and the current cost-enforcement research. Screenshots and a full Markdown copy are also in `docs/`.
 
-The backend binds only to `127.0.0.1:18731` and rejects nonlocal hosts and cross-origin web requests. It needs Python 3 with PyYAML, Hermes Agent on `PATH`, and Quickshell. On Lua-configured Hyprland, the launcher applies a session-only rule to float, center, and size the desk for the current scaled monitor. It does not force a workspace or edit Hyprland config files.
+The local control API binds only to `127.0.0.1:18731` and rejects nonlocal hosts and cross-origin web requests. The connection strip creates separate tabs for the local Hermes instance, SSH-tunneled VPS installs, and HTTPS-hosted Hermes LW gateways. SSH uses your existing OpenSSH config and keys; HTTPS requests are proxied by the local backend so gateway bearer tokens are never exposed to the QML view or browser. Gateway credentials are stored in an owner-only `0600` file at `~/.local/share/hermes-control/connections.json` (file-permission protected, not OS-keychain encrypted). Each connection runs Hermes LW on its own host, with Hermes Agent and the same app version installed there. The web guide has complete VPS and HTTPS setup instructions. It needs Python 3 with PyYAML, Hermes Agent on `PATH`, OpenSSH for SSH tabs, and Quickshell. On Lua-configured Hyprland, the launcher applies a session-only rule to float, center, and size the desk for the current scaled monitor. It does not force a workspace or edit Hyprland config files.
 
 The latest 25-item audit, GitHub references, and implemented fixes are documented in [AUDIT.md](AUDIT.md).
 
